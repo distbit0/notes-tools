@@ -175,6 +175,8 @@ def test_goal_advancement_uses_a_profile_instead_of_full_access() -> None:
     )
     assert 'codex_command+=(--profile "$profile_name")' in run_job
     assert 'codex_command+=(--dangerously-bypass-approvals-and-sandbox)' in run_job
+    assert "Codex stderr:" in run_job
+    assert 'cat "$run_output_file"' in run_job
     assert run_job.index('if [[ -n "$profile_name" ]]') < run_job.index(
         'codex_command+=(--dangerously-bypass-approvals-and-sandbox)'
     )

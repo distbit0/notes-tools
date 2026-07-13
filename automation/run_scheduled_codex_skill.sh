@@ -517,6 +517,11 @@ run_prepared_c_bang_job() {
       cat "$source_update_file"
       printf '\n'
     fi
+    if [[ -s "$run_output_file" ]]; then
+      printf 'Codex stderr:\n'
+      cat "$run_output_file"
+      printf '\n'
+    fi
     printf 'final response:\n'
     if [[ -s "$final_message_file" ]]; then
       cat "$final_message_file"
@@ -1045,6 +1050,11 @@ ${extra_prompt}"
     if [[ -s "$source_update_file" ]]; then
       printf 'session source update:\n'
       cat "$source_update_file"
+      printf '\n'
+    fi
+    if [[ -s "$run_output_file" ]]; then
+      printf 'Codex stderr:\n'
+      cat "$run_output_file"
       printf '\n'
     fi
     printf 'final response:\n'
