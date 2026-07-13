@@ -1,0 +1,19 @@
+{
+  "notesRoot": "~/notes",
+  "friendsIndex": "friends-index.md",
+  "cachePath": ".friend-idea-router-cache.json",
+  "routeSectionHeading": "Routed discussion ideas",
+  "openRouter": {
+    "responsesUrl": "https://openrouter.ai/api/v1/responses",
+    "model": "minimax/minimax-m2.7",
+    "reasoningEffort": "low"
+  },
+  "infolioArticleRelevance": {
+    "supabaseUrl": "https://layrhtjizwqdtagpehli.supabase.co",
+    "ownerUserId": "26ef52d2-521a-4c71-a582-d898fb490fe2",
+    "viewSlug": "all",
+    "queueFilter": "unread",
+    "poolSize": 30,
+    "sampleSize": 5
+  }
+}

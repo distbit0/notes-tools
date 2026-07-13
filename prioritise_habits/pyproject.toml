@@ -1,0 +1,25 @@
+[project]
+name = "prioritise_habits"
+version = "0.1.0"
+description = ""
+dependencies = [
+    "loguru",
+]
+requires-python = ">=3.13"
+license = {text = "UNLICENCE"}
+readme = "README.md"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]

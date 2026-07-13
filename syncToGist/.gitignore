@@ -1,0 +1,4 @@
+**/__pycache__/
+tmp.txt
+.env
+**/node_modules/
