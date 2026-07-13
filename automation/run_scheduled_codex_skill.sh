@@ -18,6 +18,7 @@ readonly CATCHUP_GRACE_SECONDS=600
 readonly HERDR_CODEX_INPUT_DELAY_MS="${HERDR_CODEX_INPUT_DELAY_MS:-3000}"
 
 scheduled_codex_jobs() {
+  scheduled_codex_job "scheduled-goal-advancement" "scheduled-goal-advancement" "exec" "07:00" "" "daily-goal-advancement"
   scheduled_codex_job_every_n_days "scheduled-tweet-ideas" "scheduled-tweet-ideas" "exec" "04:00" 3 2
   scheduled_codex_job_every_n_days "scheduled-idea-space-search" "scheduled-idea-space-search" "exec" "05:00" 5 1
   scheduled_codex_job_every_n_days "scheduled-note-critique" "scheduled-note-critique" "exec" "05:00" 5 2
@@ -926,11 +927,12 @@ run_interactive_codex_job() {
   return "$status"
 }
 
-run_codex_job() {
+run_and_record_codex_job() {
   local job_name="$1"
   local skill_name="$2"
   local session_source="$3"
   local extra_prompt="$4"
+  local profile_name="${5:-}"
   local log_file="${LOG_DIR}/${job_name}.log"
   local lock_file="${STATE_DIR}/${job_name}.lock"
   local run_event_file
@@ -941,10 +943,18 @@ run_codex_job() {
   local status
   local source_update_status=0
   local thread_id=""
+  local -a codex_command
 
   if [[ "$session_source" == "interactive" ]]; then
-    run_interactive_codex_job "$job_name" "$skill_name" "$extra_prompt"
-    return $?
+    if run_interactive_codex_job "$job_name" "$skill_name" "$extra_prompt"; then
+      status=0
+    else
+      status=$?
+    fi
+    if (( status != 0 && overall_status == 0 )); then
+      overall_status="$status"
+    fi
+    return 0
   fi
 
   mkdir -p "$LOG_DIR" "$STATE_DIR"
@@ -983,13 +993,24 @@ ${extra_prompt}"
   final_message_file="$(mktemp "${STATE_DIR}/${job_name}.final.XXXXXX")"
   source_update_file="$(mktemp "${STATE_DIR}/${job_name}.source.XXXXXX")"
 
+  codex_command=("$CODEX_BIN" --model "$CODEX_MODEL")
+  if [[ -n "$profile_name" ]]; then
+    if [[ ! -f "${CODEX_HOME_DIR}/${profile_name}.config.toml" ]]; then
+      echo "Codex profile not found for scheduled job ${job_name}: ${CODEX_HOME_DIR}/${profile_name}.config.toml" >&2
+      rm -f "$run_event_file" "$run_output_file" "$final_message_file" "$source_update_file"
+      if (( overall_status == 0 )); then
+        overall_status=1
+      fi
+      return 0
+    fi
+    codex_command+=(--profile "$profile_name")
+  else
+    codex_command+=(--dangerously-bypass-approvals-and-sandbox)
+  fi
+  codex_command+=(exec -C "$NOTES_DIR" --color never --json --output-last-message "$final_message_file" -)
+
   set +e
-  printf '%s\n' "$prompt" | "$CODEX_BIN" --model "$CODEX_MODEL" --dangerously-bypass-approvals-and-sandbox exec \
-    -C "$NOTES_DIR" \
-    --color never \
-    --json \
-    --output-last-message "$final_message_file" \
-    - > "$run_event_file" 2> "$run_output_file"
+  printf '%s\n' "$prompt" | "${codex_command[@]}" > "$run_event_file" 2> "$run_output_file"
   status=$?
   set -e
 
@@ -1015,6 +1036,9 @@ ${extra_prompt}"
     printf '\n[%s] scheduled Codex job: %s status=%s\n' \
       "$(date --iso-8601=seconds)" "$job_name" "$status"
     printf 'requested session source: %s\n' "$session_source"
+    if [[ -n "$profile_name" ]]; then
+      printf 'Codex profile: %s\n' "$profile_name"
+    fi
     if [[ -n "$thread_id" ]]; then
       printf 'thread id: %s\n' "$thread_id"
     fi
@@ -1034,13 +1058,17 @@ ${extra_prompt}"
 
   rm -f "$run_event_file" "$run_output_file" "$final_message_file" "$source_update_file"
 
-  return "$status"
+  if (( status != 0 && overall_status == 0 )); then
+    overall_status="$status"
+  fi
+  return 0
 }
 
 validate_job_config() {
   local job_name="$1"
   local skill_name="$2"
   local session_source="$3"
+  local profile_name="${4:-}"
   if [[ -z "${job_name:-}" ]]; then
     echo "Invalid scheduled job config; job name is required." >&2
     return 2
@@ -1070,6 +1098,15 @@ validate_job_config() {
     echo "Invalid session source for job ${job_name}: ${session_source}. Expected cli, exec, or interactive." >&2
     return 2
   fi
+
+  if [[ -n "$profile_name" ]] && ! valid_name "$profile_name"; then
+    echo "Invalid Codex profile name for job ${job_name}: ${profile_name}" >&2
+    return 2
+  fi
+  if [[ -n "$profile_name" && "$session_source" == "interactive" ]]; then
+    echo "Interactive scheduled jobs cannot use a non-interactive Codex profile: ${job_name}" >&2
+    return 2
+  fi
 }
 
 scheduled_codex_job() {
@@ -1078,8 +1115,9 @@ scheduled_codex_job() {
   local session_source="${3:-}"
   local schedule_times="${4:-}"
   local extra_prompt="${5:-}"
+  local profile_name="${6:-}"
 
-  validate_job_config "$job_name" "$skill_name" "$session_source"
+  validate_job_config "$job_name" "$skill_name" "$session_source" "$profile_name"
   if ! slot_matches_schedule "$schedule_times" "$run_slot"; then
     return 0
   fi
@@ -1089,7 +1127,7 @@ scheduled_codex_job() {
     return 0
   fi
 
-  run_and_record_codex_job "$job_name" "$skill_name" "$session_source" "$extra_prompt"
+  run_and_record_codex_job "$job_name" "$skill_name" "$session_source" "$extra_prompt" "$profile_name"
 }
 
 scheduled_error_log_job() {
@@ -1099,7 +1137,7 @@ scheduled_error_log_job() {
   local schedule_times="${4:-}"
   local preflight_status
 
-  validate_job_config "$job_name" "$skill_name" "$session_source"
+  validate_job_config "$job_name" "$skill_name" "$session_source" ""
   if ! slot_matches_schedule "$schedule_times" "$run_slot"; then
     return 0
   fi
@@ -1123,27 +1161,7 @@ scheduled_error_log_job() {
     return 0
   fi
 
-  run_and_record_codex_job "$job_name" "$skill_name" "$session_source" ""
-}
-
-run_and_record_codex_job() {
-  local job_name="$1"
-  local skill_name="$2"
-  local session_source="$3"
-  local extra_prompt="$4"
-  local status
-
-  if run_codex_job "$job_name" "$skill_name" "$session_source" "$extra_prompt"; then
-    return 0
-  else
-    status=$?
-  fi
-
-  if (( overall_status == 0 )); then
-    overall_status="$status"
-  fi
-
-  return 0
+  run_and_record_codex_job "$job_name" "$skill_name" "$session_source" "" ""
 }
 
 prepare_infolio_relevance_prompt() {
@@ -1185,7 +1203,7 @@ scheduled_codex_job_every_n_days() {
   local current_phase
   local prompt_builder_status
 
-  validate_job_config "$job_name" "$skill_name" "$session_source"
+  validate_job_config "$job_name" "$skill_name" "$session_source" ""
   if ! slot_matches_schedule "$schedule_times" "$run_slot"; then
     return 0
   fi
@@ -1231,7 +1249,7 @@ scheduled_codex_job_every_n_days() {
     fi
   fi
 
-  run_and_record_codex_job "$job_name" "$skill_name" "$session_source" "$extra_prompt"
+  run_and_record_codex_job "$job_name" "$skill_name" "$session_source" "$extra_prompt" ""
 }
 
 run_mode="${1:-all}"

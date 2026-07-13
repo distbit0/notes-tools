@@ -20,6 +20,17 @@ def scheduled_every_n_day_jobs() -> dict[str, tuple[str, int, int]]:
     }
 
 
+def scheduled_daily_jobs() -> dict[str, tuple[str, str]]:
+    scheduler_text = SCHEDULER.read_text(encoding="utf-8")
+    return {
+        job_name: (schedule_time, profile_name)
+        for job_name, _skill_name, _session_source, schedule_time, profile_name in re.findall(
+            r'scheduled_codex_job\s+"([^"]+)"\s+"([^"]+)"\s+"([^"]+)"\s+"([^"]+)"\s+""\s+"([^"]+)"',
+            scheduler_text,
+        )
+    }
+
+
 def test_scheduled_codex_job_cadences_are_spread_out() -> None:
     expected_schedule = {
         "scheduled-tweet-ideas": ("04:00", 3, 2),
@@ -33,12 +44,19 @@ def test_scheduled_codex_job_cadences_are_spread_out() -> None:
     }
 
     actual_schedule = scheduled_every_n_day_jobs()
+    daily_schedule = scheduled_daily_jobs()
 
     assert actual_schedule == expected_schedule
+    assert daily_schedule == {
+        "scheduled-goal-advancement": ("07:00", "daily-goal-advancement"),
+    }
 
     schedule_period = lcm(*(period_days for _schedule_time, period_days, _phase in actual_schedule.values()))
     for epoch_day in range(schedule_period):
-        running_jobs_by_time: dict[str, list[str]] = {}
+        running_jobs_by_time = {
+            schedule_time: [job_name]
+            for job_name, (schedule_time, _profile_name) in daily_schedule.items()
+        }
         for job_name, (schedule_time, period_days, phase) in actual_schedule.items():
             if epoch_day % period_days == phase:
                 running_jobs_by_time.setdefault(schedule_time, []).append(job_name)
@@ -55,6 +73,7 @@ def test_unattended_scheduled_jobs_do_not_relabel_as_cli() -> None:
         "scheduled-answer-open-questions",
         "scheduled-security-audit",
         "scheduled-distill-assistant-chats",
+        "scheduled-goal-advancement",
         "scheduled-infolio-relevance",
         "scheduled-draft-message-replies",
     }
@@ -68,6 +87,12 @@ def test_unattended_scheduled_jobs_do_not_relabel_as_cli() -> None:
     job_sources.update(
         re.findall(
             r'scheduled_codex_job_every_n_days\s+"([^"]+)"\s+"[^"]+"\s+"([^"]+)"',
+            scheduler_text,
+        )
+    )
+    job_sources.update(
+        re.findall(
+            r'scheduled_codex_job\s+"([^"]+)"\s+"[^"]+"\s+"([^"]+)"',
             scheduler_text,
         )
     )
@@ -108,7 +133,7 @@ def test_interactive_ci_prompt_uses_herdr_terminal_input() -> None:
     scheduler_text = SCHEDULER.read_text(encoding="utf-8")
     interactive_job = scheduler_text[
         scheduler_text.index("run_interactive_codex_job()"):
-        scheduler_text.index("\nrun_codex_job()")
+        scheduler_text.index("\nrun_and_record_codex_job()")
     ]
 
     assert (
@@ -134,6 +159,25 @@ def test_interactive_ci_prompt_uses_herdr_terminal_input() -> None:
     assert '"$prompt_file"' not in interactive_job
     assert "write_terminal_launch_request" not in scheduler_text
     assert "VSCODE_BIN" not in scheduler_text
+
+
+def test_goal_advancement_uses_a_profile_instead_of_full_access() -> None:
+    scheduler_text = SCHEDULER.read_text(encoding="utf-8")
+    run_job = scheduler_text[
+        scheduler_text.index("run_and_record_codex_job()"):
+        scheduler_text.index("\nvalidate_job_config()")
+    ]
+
+    assert (
+        'scheduled_codex_job "scheduled-goal-advancement" '
+        '"scheduled-goal-advancement" "exec" "07:00" "" "daily-goal-advancement"'
+        in scheduler_text
+    )
+    assert 'codex_command+=(--profile "$profile_name")' in run_job
+    assert 'codex_command+=(--dangerously-bypass-approvals-and-sandbox)' in run_job
+    assert run_job.index('if [[ -n "$profile_name" ]]') < run_job.index(
+        'codex_command+=(--dangerously-bypass-approvals-and-sandbox)'
+    )
 
 
 def test_no_claimable_ci_tasks_are_handled_without_errexit() -> None:
