@@ -5,7 +5,7 @@
 - Date: 2026-07-14
 - Decision: run `scheduled-goal-advancement` every day at 07:00 through the existing scheduled-job wrapper, using an `exec` session and a dedicated `daily-goal-advancement` Codex profile.
 - Rationale: isolate its maximum reasoning and broad local implementation work from the defaults used by other scheduled skills, while keeping the run out of interactive session history.
-- Safety: the profile uses `workspace-write` and unattended approvals instead of the wrapper's full-access bypass. The skill forbids identity-linked publishing or messaging without review and permits anonymous publication only when neither the channel nor content can identify the user.
+- Safety: the profile uses a named permission policy that writes only under `/home/pimania` and temporary directories, explicitly denies common private-key and credential stores, and enables unattended approvals without the wrapper's full-access bypass. The skill forbids identity-linked publishing or messaging without review and permits anonymous publication only when neither the channel nor content can identify the user.
 
 ## Behavior-aware hard feedback scheduling
 
