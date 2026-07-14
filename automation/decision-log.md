@@ -5,7 +5,7 @@
 - Date: 2026-07-14
 - Decision: run `scheduled-goal-advancement` every day at 07:00 through the existing scheduled-job wrapper, using an `exec` session and a dedicated `daily-goal-advancement` Codex profile.
 - Rationale: isolate its maximum reasoning and broad local implementation work from the defaults used by other scheduled skills, while keeping the run out of interactive session history.
-- Safety: the profile uses a named permission policy that writes only under `/home/pimania` and temporary directories, explicitly denies common private-key and credential stores, blocks remote Git protocols, and enables unattended approvals without the wrapper's full-access bypass. Because top-level notes are automatically indexed into identity-linked gists, the notes root is read-only to this job; only its private skill subdirectory and notes Git metadata are writable. Non-code handoffs stay under the skill's dated `artifacts/` directory, while review-only repository changes use persistent local no-upstream worktrees. The skill forbids identity-linked publishing or messaging without review and permits anonymous publication only when neither the channel nor content can identify the user.
+- Safety: the profile uses a named permission policy that writes only under `/home/pimania` and temporary directories, denies credential stores, and enables unattended approvals without the wrapper's full-access bypass. It permits SSH clients and Git to authenticate with existing identities under `~/.ssh`, while forbidding agents from inspecting, copying, modifying, or exposing private-key material. The skill forbids messaging, spending, high-consequence actions, and obvious public association with the user.
 
 ## Behavior-aware hard feedback scheduling
 
