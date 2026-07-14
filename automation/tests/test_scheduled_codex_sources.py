@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from math import lcm
+import os
 import re
 from pathlib import Path
+import subprocess
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -193,3 +195,34 @@ def test_no_claimable_ci_tasks_are_handled_without_errexit() -> None:
     assert "claimable_status=0\n  else\n    claimable_status=$?" in ci_scheduler
     assert "if (( claimable_status == 1 )); then" in ci_scheduler
     assert "return 0" in ci_scheduler
+
+
+def test_override_runs_a_scheduled_job_again_after_its_catchup_was_claimed(
+    tmp_path: Path,
+) -> None:
+    environment = os.environ | {
+        "CODEX_BIN": "/usr/bin/true",
+        "XDG_STATE_HOME": str(tmp_path / "state"),
+    }
+
+    def run_scheduler(*arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(SCHEDULER), *arguments],
+            cwd=REPO_ROOT,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    first_run = run_scheduler("scheduled-jobs", "0700")
+    repeated_run = run_scheduler("scheduled-jobs", "0700")
+    override_run = run_scheduler("--override", "scheduled-jobs", "0700")
+
+    assert first_run.returncode == 0
+    assert "scheduled Codex job: scheduled-goal-advancement status=0" in first_run.stdout
+    assert repeated_run.returncode == 0
+    assert "catch-up already ran" in repeated_run.stdout
+    assert override_run.returncode == 0
+    assert "scheduled Codex job: scheduled-goal-advancement status=0" in override_run.stdout
+    assert "catch-up already ran" not in override_run.stdout

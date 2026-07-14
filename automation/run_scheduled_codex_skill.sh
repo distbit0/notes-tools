@@ -88,7 +88,7 @@ scheduled_message_reply_jobs() {
 }
 
 usage() {
-  echo "Usage: $0 [all|c-bang|ci-bang|message-replies|scheduled-jobs SLOT]" >&2
+  echo "Usage: $0 [--override] [all|c-bang|ci-bang|message-replies|scheduled-jobs SLOT]" >&2
   echo "Edit scheduled_codex_jobs in this script to choose scheduled skills." >&2
 }
 
@@ -216,6 +216,7 @@ catchup_date_for_slot() {
 claim_catchup_run() {
   local job_name="$1"
   local slot="$2"
+  local override_existing_run="$3"
   local catchup_date
   local marker_file
 
@@ -225,7 +226,7 @@ claim_catchup_run() {
   fi
 
   marker_file="${STATE_DIR}/catchup-${job_name}-${catchup_date}"
-  if [[ -e "$marker_file" ]]; then
+  if [[ -e "$marker_file" && "$override_existing_run" != "1" ]]; then
     printf '[%s] skipped scheduled Codex job: %s; catch-up already ran for %s.\n' \
       "$(date --iso-8601=seconds)" "$job_name" "$catchup_date" \
       | append_job_log "${LOG_DIR}/${job_name}.log"
@@ -1227,7 +1228,7 @@ scheduled_codex_job() {
   fi
 
   scheduled_codex_job_count=$((scheduled_codex_job_count + 1))
-  if ! claim_catchup_run "$job_name" "$run_slot"; then
+  if ! claim_catchup_run "$job_name" "$run_slot" "$override_existing_run"; then
     return 0
   fi
 
@@ -1268,7 +1269,7 @@ scheduled_error_log_job() {
     return 0
   fi
 
-  if ! claim_catchup_run "$job_name" "$run_slot"; then
+  if ! claim_catchup_run "$job_name" "$run_slot" "$override_existing_run"; then
     return 0
   fi
 
@@ -1338,7 +1339,7 @@ scheduled_codex_job_every_n_days() {
     return 0
   fi
 
-  if ! claim_catchup_run "$job_name" "$run_slot"; then
+  if ! claim_catchup_run "$job_name" "$run_slot" "$override_existing_run"; then
     return 0
   fi
 
@@ -1369,6 +1370,12 @@ scheduled_codex_job_every_n_days() {
 
   run_and_record_codex_job "$job_name" "$skill_name" "$session_source" "$extra_prompt" ""
 }
+
+override_existing_run=0
+if [[ "${1:-}" == "--override" ]]; then
+  override_existing_run=1
+  shift
+fi
 
 run_mode="${1:-all}"
 run_slot=""
