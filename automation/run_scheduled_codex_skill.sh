@@ -13,7 +13,8 @@ readonly HERDR_LAUNCHER="${HERDR_LAUNCHER:-${HOME}/dev/misc/desktop/herdr-launch
 readonly LOG_MAX_BYTES="${SCHEDULED_CODEX_LOG_MAX_BYTES:-200000}"
 readonly STATE_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/scheduled-codex"
 readonly MESSAGE_REPLY_CHANGED_NOTES_FILE="${STATE_DIR}/message-reply-changed-notes.txt"
-readonly DESKTOP_ERROR_LOG="${HOME}/dev/error_log.txt"
+readonly DESKTOP_ERROR_LOG="${DESKTOP_ERROR_LOG_PATH:-${HOME}/dev/error_log.txt}"
+readonly DESKTOP_ERROR_LOGGER="${DESKTOP_ERROR_LOGGER:-${HOME}/dev/misc/automation/log_desktop_error.sh}"
 readonly CATCHUP_GRACE_SECONDS=600
 readonly HERDR_CODEX_INPUT_DELAY_MS="${HERDR_CODEX_INPUT_DELAY_MS:-3000}"
 
@@ -37,8 +38,10 @@ scheduled_c_bang_jobs() {
 
 scheduled_ci_bang_jobs() {
   local claimable_status
+  local error_count_before
 
   scheduled_codex_job_count=$((scheduled_codex_job_count + 1))
+  error_count_before="$(desktop_error_count scheduled-ci-bang-interactive)"
   if claimable_ci_bang_tasks; then
     claimable_status=0
   else
@@ -50,7 +53,15 @@ scheduled_ci_bang_jobs() {
     return 0
   fi
   if (( claimable_status != 0 )); then
-    return "$claimable_status"
+    log_scheduled_job_failure \
+      "scheduled-ci-bang-interactive" \
+      "scheduled-ci-bang-interactive" \
+      "$claimable_status" \
+      "$error_count_before" || true
+    if (( overall_status == 0 )); then
+      overall_status="$claimable_status"
+    fi
+    return 0
   fi
 
   run_and_record_codex_job "scheduled-ci-bang-interactive" "scheduled-ci-bang-interactive" "interactive" ""
@@ -263,6 +274,54 @@ log_skipped_job() {
     | append_job_log "${LOG_DIR}/${job_name}.log"
 }
 
+desktop_error_count() {
+  local source_name="$1"
+  local count
+
+  if [[ ! -f "$DESKTOP_ERROR_LOG" ]]; then
+    echo 0
+    return 0
+  fi
+
+  count="$(grep -Fxc "source: ${source_name}" "$DESKTOP_ERROR_LOG" || true)"
+  printf '%s\n' "${count:-0}"
+}
+
+log_scheduled_job_failure() {
+  local job_name="$1"
+  local skill_name="$2"
+  local status="$3"
+  local error_count_before="$4"
+  local thread_id="${5:-}"
+  local job_log="${LOG_DIR}/${job_name}.log"
+  local error_count_after
+  local details
+
+  error_count_after="$(desktop_error_count "$skill_name")"
+  if (( error_count_after > error_count_before )); then
+    return 0
+  fi
+
+  details="operation=scheduled execution
+impact=the scheduled job did not complete successfully
+recovered=no
+exit_status=${status}
+thread_id=${thread_id:-unavailable}
+job_log=${job_log}"
+
+  if [[ ! -x "$DESKTOP_ERROR_LOGGER" ]]; then
+    printf 'Could not log scheduled failure for %s: logger is not executable: %s\n' \
+      "$job_name" "$DESKTOP_ERROR_LOGGER" >&2
+    return 1
+  fi
+
+  "$DESKTOP_ERROR_LOGGER" \
+    "$skill_name" \
+    "Scheduled job failed" \
+    "${job_name} exited with status ${status} before it could reliably report the failure." \
+    "$details"
+}
+
 error_log_has_new_records() {
   [[ -s "$DESKTOP_ERROR_LOG" ]]
 }
@@ -319,6 +378,7 @@ $(cat "$prepare_file")
 Rules:
 - Do not ask follow-up questions.
 - If blocked, fail clearly instead of using a silent fallback.
+- Log each distinct material failure, blocker, incomplete required verification, or correctness-threatening warning with /home/pimania/dev/misc/automation/log_desktop_error.sh. Use scheduled-c-bang-executor as SOURCE and include the affected task, concise redacted impact, recovery status, thread id, and scheduler log path. Do not log expected no-ops or optional warnings that do not affect correctness.
 - Keep edits scoped to what the claimed tasks require.
 - After every claimed task is complete, blocked, or intentionally reduced to a drafted next step, run complete_c_bang_tasks.py with one report per task_id.
 - Summarize any files changed and anything surprising in the final response.
@@ -373,6 +433,7 @@ run_prepared_c_bang_job() {
   local thread_id=""
   local session_recorded=0
   local source_update_status=0
+  local error_count_before
 
   mkdir -p "$LOG_DIR" "$STATE_DIR"
 
@@ -381,6 +442,8 @@ run_prepared_c_bang_job() {
     log_skipped_job "$job_name" "already running"
     return 0
   fi
+
+  error_count_before="$(desktop_error_count "$job_name")"
 
   prepare_file="$(mktemp "${STATE_DIR}/${job_name}.prepare.XXXXXX")"
   prepare_error_file="$(mktemp "${STATE_DIR}/${job_name}.prepare-stderr.XXXXXX")"
@@ -531,6 +594,11 @@ run_prepared_c_bang_job() {
     fi
   } | append_job_log "$log_file"
 
+  if (( status != 0 )); then
+    log_scheduled_job_failure \
+      "$job_name" "$job_name" "$status" "$error_count_before" "${thread_id:-}" || true
+  fi
+
   rm -f "$prepare_file" "$prepare_error_file" "$prompt_file" "$run_event_file" "$run_output_file" "$final_message_file" "$source_update_file"
 
   return "$status"
@@ -596,8 +664,10 @@ run_and_record_message_pull_scripts() {
   local log_file="${LOG_DIR}/message-pull-scripts.log"
   local output_file
   local status
+  local error_count_before
 
   mkdir -p "$LOG_DIR" "$STATE_DIR"
+  error_count_before="$(desktop_error_count scheduled-draft-message-replies)"
   : > "$MESSAGE_REPLY_CHANGED_NOTES_FILE"
   output_file="$(mktemp "${STATE_DIR}/message-pull-scripts.XXXXXX")"
 
@@ -613,6 +683,14 @@ run_and_record_message_pull_scripts() {
   } | append_job_log "$log_file"
 
   rm -f "$output_file"
+
+  if (( status != 0 )); then
+    log_scheduled_job_failure \
+      "message-pull-scripts" \
+      "scheduled-draft-message-replies" \
+      "$status" \
+      "$error_count_before" || true
+  fi
 
   if (( status != 0 && overall_status == 0 )); then
     overall_status="$status"
@@ -948,13 +1026,19 @@ run_and_record_codex_job() {
   local status
   local source_update_status=0
   local thread_id=""
+  local error_count_before
   local -a codex_command
 
   if [[ "$session_source" == "interactive" ]]; then
+    error_count_before="$(desktop_error_count "$skill_name")"
     if run_interactive_codex_job "$job_name" "$skill_name" "$extra_prompt"; then
       status=0
     else
       status=$?
+    fi
+    if (( status != 0 )); then
+      log_scheduled_job_failure \
+        "$job_name" "$skill_name" "$status" "$error_count_before" || true
     fi
     if (( status != 0 && overall_status == 0 )); then
       overall_status="$status"
@@ -971,6 +1055,8 @@ run_and_record_codex_job() {
     return 0
   fi
 
+  error_count_before="$(desktop_error_count "$skill_name")"
+
   prompt="$(
     cat <<PROMPT
 Use \$$skill_name for this unattended scheduled Codex job.
@@ -981,6 +1067,7 @@ Working directory: $NOTES_DIR
 Rules:
 - Do not ask follow-up questions.
 - If blocked, fail clearly instead of using a silent fallback.
+- Log each distinct material failure, blocker, incomplete required verification, or correctness-threatening warning with /home/pimania/dev/misc/automation/log_desktop_error.sh. Use $skill_name as SOURCE and include concise redacted impact, recovery status, thread id, and scheduler log path. Do not log expected no-ops or optional warnings that do not affect correctness.
 - Keep edits scoped to what the skill requires.
 - Summarize any files changed and anything surprising in the final response.
 PROMPT
@@ -1002,6 +1089,8 @@ ${extra_prompt}"
   if [[ -n "$profile_name" ]]; then
     if [[ ! -f "${CODEX_HOME_DIR}/${profile_name}.config.toml" ]]; then
       echo "Codex profile not found for scheduled job ${job_name}: ${CODEX_HOME_DIR}/${profile_name}.config.toml" >&2
+      log_scheduled_job_failure \
+        "$job_name" "$skill_name" 1 "$error_count_before" || true
       rm -f "$run_event_file" "$run_output_file" "$final_message_file" "$source_update_file"
       if (( overall_status == 0 )); then
         overall_status=1
@@ -1065,6 +1154,11 @@ ${extra_prompt}"
       printf '(no final response captured)\n'
     fi
   } | append_job_log "$log_file"
+
+  if (( status != 0 )); then
+    log_scheduled_job_failure \
+      "$job_name" "$skill_name" "$status" "$error_count_before" "$thread_id" || true
+  fi
 
   rm -f "$run_event_file" "$run_output_file" "$final_message_file" "$source_update_file"
 
@@ -1146,6 +1240,7 @@ scheduled_error_log_job() {
   local session_source="${3:-}"
   local schedule_times="${4:-}"
   local preflight_status
+  local error_count_before
 
   validate_job_config "$job_name" "$skill_name" "$session_source" ""
   if ! slot_matches_schedule "$schedule_times" "$run_slot"; then
@@ -1153,6 +1248,7 @@ scheduled_error_log_job() {
   fi
 
   scheduled_codex_job_count=$((scheduled_codex_job_count + 1))
+  error_count_before="$(desktop_error_count "$skill_name")"
 
   set +e
   error_log_has_new_records
@@ -1164,7 +1260,12 @@ scheduled_error_log_job() {
     return 0
   fi
   if (( preflight_status != 0 )); then
-    return "$preflight_status"
+    log_scheduled_job_failure \
+      "$job_name" "$skill_name" "$preflight_status" "$error_count_before" || true
+    if (( overall_status == 0 )); then
+      overall_status="$preflight_status"
+    fi
+    return 0
   fi
 
   if ! claim_catchup_run "$job_name" "$run_slot"; then
@@ -1212,6 +1313,7 @@ scheduled_codex_job_every_n_days() {
   local extra_prompt_builder="${8:-}"
   local current_phase
   local prompt_builder_status
+  local error_count_before
 
   validate_job_config "$job_name" "$skill_name" "$session_source" ""
   if ! slot_matches_schedule "$schedule_times" "$run_slot"; then
@@ -1241,6 +1343,7 @@ scheduled_codex_job_every_n_days() {
   fi
 
   if [[ -n "$extra_prompt_builder" ]]; then
+    error_count_before="$(desktop_error_count "$skill_name")"
     if ! declare -F "$extra_prompt_builder" >/dev/null; then
       echo "Unknown extra-prompt builder for ${job_name}: ${extra_prompt_builder}" >&2
       return 2
@@ -1255,7 +1358,12 @@ scheduled_codex_job_every_n_days() {
       return 0
     fi
     if (( prompt_builder_status != 0 )); then
-      return "$prompt_builder_status"
+      log_scheduled_job_failure \
+        "$job_name" "$skill_name" "$prompt_builder_status" "$error_count_before" || true
+      if (( overall_status == 0 )); then
+        overall_status="$prompt_builder_status"
+      fi
+      return 0
     fi
   fi
 
