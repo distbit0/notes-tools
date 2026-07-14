@@ -28,16 +28,16 @@
 - Rationale: all 04:00 cadence phases overlap an existing six-day job, while the scheduler intentionally limits each time slot to one Codex job. Preselection makes duplicate exclusion deterministic and prevents Codex from changing the sampled batch.
 - Constraints: keep the 21:00 timer disabled until Infolio's `documents.lineate_url` migration is live and the notes-tools environment has its service-role credential.
 
-## Weekly assistant-chat distillation scheduling
-
-- Date: 2026-07-12
-- Decision: run `scheduled-distill-assistant-chats` every Sunday at 16:00 through the existing scheduled Codex wrapper and user timer.
-- Rationale: keep assistant-chat processing on the established unattended path while separating it from the 04:00 note-generation jobs and the 11:00 security audit.
-- Constraints: run as a non-interactive `exec` session so the distillation job does not ingest its own automation thread.
-
 ## Weekly security audit scheduling
 
 - Date: 2026-07-12
 - Decision: run `scheduled-security-audit` every Sunday at 11:00 through the existing scheduled Codex wrapper and user timer.
 - Rationale: keep the security audit on the established unattended-job path while separating its system inspection from the 04:00 note-processing slot.
 - Constraints: the audit runs as an ordinary user, records inaccessible privileged checks as coverage gaps, and proposes rather than applies fixes.
+
+## Scheduled Codex execution boundary
+
+- The shared wrapper always runs scheduled skills from `~/notes`; each skill owns its own file selection and mutation policy, while systemd owns wakeups and the wrapper owns cadence.
+- Non-interactive jobs use `exec` sessions so conversation-processing jobs cannot ingest their own automation threads. Interactive jobs keep the Codex TUI as the foreground terminal process.
+- Importers record changed message-note paths before reply drafting. Drafting runs only when the unified message pull actually changed message notes.
+- Codex state-schema and Herdr lifecycle failures remain explicit; the scheduler must not silently switch execution paths.

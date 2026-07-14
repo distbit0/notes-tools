@@ -12,7 +12,7 @@ from loguru import logger
 
 DEFAULT_NOTES_ROOT = Path.home() / "notes"
 DEFAULT_LOG_PATH = Path(__file__).with_name("normalize-markdown-filenames.log")
-PROTECTED_FILENAMES = {"AGENTS.md", "README.md", "agent-notes.md", "decision-log.md"}
+PROTECTED_FILENAMES = {"AGENTS.md", "README.md", "decision-log.md"}
 PROTECTED_FILENAME_PREFIXES = ("msg - ",)
 WIKILINK_PATTERN = re.compile(r"(?P<embed>!)?(?<!\\)\[\[(?P<body>[^\]\n]+)\]\]")
 FENCE_PATTERN = re.compile(r"\s*(```|~~~)")
