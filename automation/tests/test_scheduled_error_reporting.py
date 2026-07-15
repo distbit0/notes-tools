@@ -110,12 +110,23 @@ def test_contradiction_resolver_prioritizes_insight_and_preserves_sources() -> N
     assert "implications" in skill_text
     assert "not merely" in skill_text
     assert "every active contradiction" in skill_text
+    assert "resolved or superseded entry" in skill_text
+    assert "no prior resolver-feedback entry" in skill_text
     assert "Resolution candidate" in skill_text
     assert "Do not delete" in skill_text
     assert "preserve" in skill_text
     assert "atomic" in skill_text
     assert "additive" in skill_text
     assert "feedback.md" in skill_text
+
+
+def test_security_audit_read_only_boundary_allows_contradiction_routing() -> None:
+    skill_text = (SKILLS_DIR / "scheduled-security-audit/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "read-only except" in skill_text
+    assert "/home/pimania/notes/contradictions.md" in skill_text
 
 
 def test_runner_fallback_uses_only_redacted_status_metadata() -> None:
