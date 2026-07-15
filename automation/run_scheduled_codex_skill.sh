@@ -22,6 +22,7 @@ readonly HERDR_CODEX_INPUT_DELAY_MS="${HERDR_CODEX_INPUT_DELAY_MS:-3000}"
 scheduled_codex_jobs() {
   scheduled_codex_job "scheduled-goal-advancement" "scheduled-goal-advancement" "exec" "07:00" "" "daily-goal-advancement"
   scheduled_codex_job_every_n_days "scheduled-tweet-ideas" "scheduled-tweet-ideas" "exec" "04:00" 3 2
+  scheduled_codex_job_every_n_days "scheduled-resolve-contradictions" "scheduled-resolve-contradictions" "exec" "04:00" 6 1
   scheduled_codex_job_every_n_days "scheduled-idea-space-search" "scheduled-idea-space-search" "exec" "05:00" 5 1
   scheduled_codex_job_every_n_days "scheduled-note-critique" "scheduled-note-critique" "exec" "05:00" 5 2
   scheduled_codex_job_every_n_days "scheduled-hard-feedback" "scheduled-hard-feedback" "exec" "05:00" 5 3
@@ -394,7 +395,7 @@ $(cat "$prepare_file")
 Rules:
 - Do not ask follow-up questions.
 - If blocked, fail clearly instead of using a silent fallback.
-- Log each distinct material failure, blocker, incomplete required verification, or correctness-threatening warning with /home/pimania/dev/misc/automation/log_desktop_error.sh. Use scheduled-c-bang-executor as SOURCE and include the affected task, concise redacted impact, recovery status, thread id, and scheduler log path. Do not log expected no-ops or optional warnings that do not affect correctness.
+- Use /home/pimania/dev/misc/automation/log_desktop_error.sh only for distinct material technical or operational failures or blockers, correctness-threatening technical warnings, and incomplete required technical verification. Use scheduled-c-bang-executor as SOURCE and include the affected task, concise redacted impact, recovery status, thread id, and scheduler log path. Record note-content contradictions in /home/pimania/notes/contradictions.md instead. Record other substantive nontechnical limitations in the skill or task feedback. Do not log expected no-ops or optional warnings that do not affect correctness.
 - Keep edits scoped to what the claimed tasks require.
 - After every claimed task is complete, blocked, or intentionally reduced to a drafted next step, run complete_c_bang_tasks.py with one report per task_id.
 - Summarize any files changed and anything surprising in the final response.
@@ -1083,7 +1084,7 @@ Working directory: $NOTES_DIR
 Rules:
 - Do not ask follow-up questions.
 - If blocked, fail clearly instead of using a silent fallback.
-- Log each distinct material failure, blocker, incomplete required verification, or correctness-threatening warning with /home/pimania/dev/misc/automation/log_desktop_error.sh. Use $skill_name as SOURCE and include concise redacted impact, recovery status, thread id, and scheduler log path. Do not log expected no-ops or optional warnings that do not affect correctness.
+- Use /home/pimania/dev/misc/automation/log_desktop_error.sh only for distinct material technical or operational failures or blockers, correctness-threatening technical warnings, and incomplete required technical verification. Use $skill_name as SOURCE and include concise redacted impact, recovery status, thread id, and scheduler log path. Record note-content contradictions in /home/pimania/notes/contradictions.md instead. Record other substantive nontechnical limitations in the skill or task feedback. Do not log expected no-ops or optional warnings that do not affect correctness.
 - Keep edits scoped to what the skill requires.
 - Summarize any files changed and anything surprising in the final response.
 PROMPT

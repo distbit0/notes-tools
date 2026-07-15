@@ -24,12 +24,13 @@ RECURRING_SKILLS = {
     "scheduled-idea-space-search",
     "scheduled-infolio-relevance",
     "scheduled-note-critique",
+    "scheduled-resolve-contradictions",
     "scheduled-security-audit",
     "scheduled-tweet-ideas",
 }
 
 
-def test_every_recurring_skill_requires_material_error_reporting() -> None:
+def test_every_recurring_skill_separates_technical_errors_from_note_conflicts() -> None:
     actual_skills = {
         skill_file.parent.name
         for skill_file in SKILLS_DIR.glob("scheduled-*/SKILL.md")
@@ -40,12 +41,81 @@ def test_every_recurring_skill_requires_material_error_reporting() -> None:
         skill_text = (SKILLS_DIR / skill_name / "SKILL.md").read_text(encoding="utf-8")
         assert "## Error Reporting" in skill_text
         assert f"log_desktop_error.sh {skill_name} TITLE MESSAGE DETAILS" in skill_text
+        assert "technical or operational" in skill_text
+        assert "required technical verification" in skill_text
+        assert "contradictions.md" in skill_text
+        assert "substantive nontechnical" in skill_text
+        assert "feedback" in skill_text
         assert "Do not log expected" in skill_text or "Do not relog records" in skill_text
 
     creator_text = (SKILLS_DIR / "schedule-codex-skill/SKILL.md").read_text(
         encoding="utf-8"
     )
-    assert "Require every recurring skill to report each distinct material failure" in creator_text
+    assert "technical or operational" in creator_text
+    assert "required technical verification" in creator_text
+    assert "contradictions.md" in creator_text
+    assert "substantive nontechnical" in creator_text
+
+
+def test_scheduler_prompts_enforce_the_same_reporting_boundary() -> None:
+    scheduler_text = SCHEDULER.read_text(encoding="utf-8")
+
+    assert scheduler_text.count("only for distinct material technical or operational") == 2
+    assert scheduler_text.count("incomplete required technical verification") == 2
+    assert scheduler_text.count(
+        "Record note-content contradictions in /home/pimania/notes/contradictions.md instead."
+    ) == 2
+    assert scheduler_text.count(
+        "Record other substantive nontechnical limitations in the skill or task feedback."
+    ) == 2
+
+
+def test_logged_error_fixer_requires_context_complete_judgment_based_reports() -> None:
+    skill_text = (SKILLS_DIR / "scheduled-fix-logged-errors/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "standalone" in skill_text
+    assert "without" in skill_text and "original error" in skill_text
+    assert "quick fix" in skill_text
+    assert "user intent" in skill_text
+    assert "unresolved" in skill_text and "why" in skill_text
+    assert "reroute" in skill_text and "contradictions.md" in skill_text
+
+
+def test_goal_advancement_preserves_notes_and_tracks_action_origins() -> None:
+    skill_text = (SKILLS_DIR / "scheduled-goal-advancement/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Do not delete" in skill_text
+    assert "Goal-advancement update" in skill_text
+    assert "additive" in skill_text
+    assert "same line" in skill_text
+    assert "completed" in skill_text and "partially advanced" in skill_text
+    assert "todo-sourced" in skill_text
+    assert "independently selected" in skill_text
+    assert "at least half" in skill_text
+    assert "rounded up" in skill_text
+    assert "Drafts and decision aids" in skill_text
+
+
+def test_contradiction_resolver_prioritizes_insight_and_preserves_sources() -> None:
+    skill_text = (SKILLS_DIR / "scheduled-resolve-contradictions/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "novel" in skill_text
+    assert "useful insights" in skill_text
+    assert "implications" in skill_text
+    assert "not merely" in skill_text
+    assert "every active contradiction" in skill_text
+    assert "Resolution candidate" in skill_text
+    assert "Do not delete" in skill_text
+    assert "preserve" in skill_text
+    assert "atomic" in skill_text
+    assert "additive" in skill_text
+    assert "feedback.md" in skill_text
 
 
 def test_runner_fallback_uses_only_redacted_status_metadata() -> None:

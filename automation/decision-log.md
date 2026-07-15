@@ -1,5 +1,12 @@
 # Decision Log
 
+## Contradiction resolution scheduling and reporting boundary
+
+- Date: 2026-07-15
+- Decision: run `scheduled-resolve-contradictions` every six days at 04:00 on phase 1 as an unattended `exec` session. Its phase is disjoint from the three-day tweet job and the other six-day 04:00 job.
+- Purpose: use contradictions to find consequential errors in prior thinking, derive novel or useful implications, and propose improvements rather than merely reconcile incompatible statements.
+- Reporting boundary: `/home/pimania/dev/error_log.txt` is only for technical or operational failures and incomplete required technical verification. Note-content contradictions go to `/home/pimania/notes/contradictions.md`; other substantive nontechnical limitations remain in the originating skill or task feedback.
+
 ## Daily goal advancement scheduling
 
 - Date: 2026-07-14

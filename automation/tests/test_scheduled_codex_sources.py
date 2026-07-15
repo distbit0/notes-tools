@@ -38,6 +38,7 @@ def scheduled_daily_jobs() -> dict[str, tuple[str, str]]:
 def test_scheduled_codex_job_cadences_are_spread_out() -> None:
     expected_schedule = {
         "scheduled-tweet-ideas": ("04:00", 3, 2),
+        "scheduled-resolve-contradictions": ("04:00", 6, 1),
         "scheduled-idea-space-search": ("05:00", 5, 1),
         "scheduled-note-critique": ("05:00", 5, 2),
         "scheduled-hard-feedback": ("05:00", 5, 3),
@@ -71,6 +72,7 @@ def test_unattended_scheduled_jobs_do_not_relabel_as_cli() -> None:
     scheduler_text = SCHEDULER.read_text(encoding="utf-8")
     expected_exec_jobs = {
         "scheduled-tweet-ideas",
+        "scheduled-resolve-contradictions",
         "scheduled-idea-space-search",
         "scheduled-note-critique",
         "scheduled-hard-feedback",
