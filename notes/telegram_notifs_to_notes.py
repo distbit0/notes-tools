@@ -38,7 +38,7 @@ TELEGRAM_API_ID_ENV = "TELEGRAM_API_ID"
 TELEGRAM_API_HASH_ENV = "TELEGRAM_API_HASH"
 TELEGRAM_SESSION_NAME_ENV = "TELEGRAM_SESSION_NAME"
 TELEGRAM_AUTH_COMMAND = (
-    f"cd {Path.home() / 'dev/misc'} && "
+    f"cd {Path(__file__).resolve().parents[1]} && "
     "uv run --env-file .env python notes/auth_telegram_notifs.py"
 )
 

@@ -695,6 +695,15 @@ def test_telegram_api_id_requires_positive_integer(monkeypatch: pytest.MonkeyPat
         telegram_notifs_to_notes.telegram_api_id()
 
 
+def test_telegram_auth_command_uses_owning_repo() -> None:
+    repo_root = Path(telegram_notifs_to_notes.__file__).resolve().parents[1]
+
+    assert telegram_notifs_to_notes.TELEGRAM_AUTH_COMMAND == (
+        f"cd {repo_root} && "
+        "uv run --env-file .env python notes/auth_telegram_notifs.py"
+    )
+
+
 def test_telegram_auth_check_allows_authorized_session() -> None:
     class FakeClient:
         async def is_user_authorized(self) -> bool:
