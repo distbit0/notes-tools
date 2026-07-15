@@ -1,5 +1,10 @@
 # Decision Log
 
+## 2026-07-16: ChatGPT project as a browser handoff queue
+
+- After a successful archive pass, the conversation sync opens every chat in the configured `open_in_browser` project as a new Brave tab, then removes its project association through the ChatGPT backend API.
+- The project itself is the retry ledger: a chat remains queued if Brave cannot accept the tab or the API removal fails. The sync records no second queue state.
+
 ## 2026-07-14: ChatGPT conversation sync schedule
 
 - Sync active ChatGPT conversations into `~/notes/chatgpt-conversations` at 03:00 and 15:00 with a persistent systemd user timer.

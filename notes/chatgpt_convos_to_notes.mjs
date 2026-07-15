@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   appendFile,
   mkdir,
@@ -18,6 +18,7 @@ const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = path.dirname(SCRIPT_PATH);
 const MISC_ROOT = path.dirname(SCRIPT_DIR);
 const HOME_DIR = os.homedir();
+const CONFIG_PATH = path.join(SCRIPT_DIR, "config.json");
 const DEFAULT_OUTPUT_ROOT = path.join(HOME_DIR, "notes/chatgpt-conversations");
 const DEFAULT_STATE_PATH = path.join(
   HOME_DIR,
@@ -68,7 +69,24 @@ Environment:
 `;
 }
 
-function parseArgs(argv) {
+function loadConfiguration() {
+  const configuration = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+  const browserQueue = configuration.chatgptConversationSync;
+  if (
+    !browserQueue ||
+    typeof browserQueue.openInBrowserProject !== "string" ||
+    !browserQueue.openInBrowserProject.trim() ||
+    typeof browserQueue.braveExecutable !== "string" ||
+    !browserQueue.braveExecutable.trim()
+  ) {
+    throw new UserFacingError(
+      "notes/config.json must define chatgptConversationSync.openInBrowserProject and braveExecutable.",
+    );
+  }
+  return browserQueue;
+}
+
+function parseArgs(argv, browserQueue = loadConfiguration()) {
   const options = {
     outputRoot: DEFAULT_OUTPUT_ROOT,
     statePath: DEFAULT_STATE_PATH,
@@ -83,6 +101,8 @@ function parseArgs(argv) {
     statusOnly: false,
     forceRun: false,
     bearer: process.env.CHATGPT_BEARER_TOKEN || "",
+    openInBrowserProject: browserQueue.openInBrowserProject,
+    braveExecutable: browserQueue.braveExecutable,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -391,6 +411,18 @@ class ChatGptClient {
     return response.json();
   }
 
+  async patchBackendJson(pathname, body) {
+    const response = await this.fetchWithRetry(
+      `https://chatgpt.com${pathname.startsWith("/") ? "" : "/"}${pathname}`,
+      {
+        method: "PATCH",
+        headers: this.backendHeaders("application/json"),
+        body: JSON.stringify(body),
+      },
+    );
+    return response.json();
+  }
+
   async fetchFileDownloadInfo(fileId, conversationId) {
     const response = await this.fetchWithRetry(
       `https://chatgpt.com/backend-api/files/download/${encodeURIComponent(
@@ -548,13 +580,16 @@ async function syncChatGptConversations(options) {
     exported: 0,
     attachmentsDownloaded: 0,
     attachmentWarnings: 0,
+    browserTabsOpened: 0,
+    projectConversationsRemoved: 0,
   };
 
   try {
     const client = new ChatGptClient(options);
     await client.initialize();
 
-    const candidates = await collectCandidates(client, options);
+    const projects = await fetchProjects(client);
+    const candidates = await collectCandidates(client, options, projects);
     summary.discovered = candidates.length;
 
     for (const candidate of candidates) {
@@ -584,6 +619,14 @@ async function syncChatGptConversations(options) {
       await saveState(options.statePath, state);
     }
 
+    const browserQueueResult = await openAndRemoveProjectConversations(
+      client,
+      options,
+      projects,
+    );
+    summary.browserTabsOpened = browserQueueResult.opened;
+    summary.projectConversationsRemoved = browserQueueResult.removed;
+
     await finalizeRun(options.statePath, state, run, "success", summary);
     return { status: "success", summary };
   } catch (error) {
@@ -595,12 +638,12 @@ async function syncChatGptConversations(options) {
   }
 }
 
-async function collectCandidates(client, options) {
+async function collectCandidates(client, options, projects) {
   const candidatesById = new Map();
   await collectNormalCandidates(client, options, candidatesById);
 
   if (!hasReachedCandidateLimit(options, candidatesById)) {
-    await collectProjectCandidates(client, options, candidatesById);
+    await collectProjectCandidates(client, options, candidatesById, projects);
   }
 
   return [...candidatesById.values()]
@@ -639,8 +682,7 @@ async function collectNormalCandidates(client, options, candidatesById) {
   }
 }
 
-async function collectProjectCandidates(client, options, candidatesById) {
-  const projects = await fetchProjects(client);
+async function collectProjectCandidates(client, options, candidatesById, projects) {
   for (const project of projects) {
     if (hasReachedCandidateLimit(options, candidatesById)) break;
     await collectSingleProjectCandidates(client, options, candidatesById, project);
@@ -698,6 +740,114 @@ async function collectSingleProjectCandidates(client, options, candidatesById, p
     if (reachedOlderPage) break;
     cursor = data.cursor || null;
   }
+}
+
+async function fetchAllProjectConversations(client, project) {
+  const conversations = [];
+  let cursor = "0";
+  while (cursor) {
+    const data = await client.fetchBackendJson(
+      `/backend-api/gizmos/${encodeURIComponent(
+        project.id,
+      )}/conversations?cursor=${encodeURIComponent(cursor)}`,
+    );
+    const items = Array.isArray(data.items) ? data.items : [];
+    conversations.push(...items);
+    cursor = data.cursor || null;
+  }
+  return conversations;
+}
+
+async function openAndRemoveProjectConversations(client, options, projects) {
+  const matchingProjects = projects.filter(
+    (project) => project.name === options.openInBrowserProject,
+  );
+  if (matchingProjects.length === 0) {
+    console.warn(
+      `Warning: ChatGPT project ${JSON.stringify(
+        options.openInBrowserProject,
+      )} was not found; no browser tabs were opened.`,
+    );
+    return { opened: 0, removed: 0 };
+  }
+  if (matchingProjects.length > 1) {
+    throw new UserFacingError(
+      `Multiple ChatGPT projects are named ${JSON.stringify(
+        options.openInBrowserProject,
+      )}; refusing to choose one.`,
+    );
+  }
+
+  const browserProject = matchingProjects[0];
+  const conversations = (await fetchAllProjectConversations(
+    client,
+    browserProject,
+  )).map((conversation) => {
+    const id = conversation.id || conversation.conversation_id;
+    if (!id) {
+      throw new Error(
+        `${options.openInBrowserProject} conversation is missing its id.`,
+      );
+    }
+    return { id, title: conversation.title || id };
+  });
+  if (conversations.length === 0) return { opened: 0, removed: 0 };
+
+  let opened = 0;
+  for (const conversation of conversations) {
+    const conversationUrl = `https://chatgpt.com/c/${encodeURIComponent(
+      conversation.id,
+    )}`;
+    openBraveTab(options, conversationUrl);
+    opened += 1;
+  }
+
+  let removed = 0;
+  for (const conversation of conversations) {
+    const response = await client.patchBackendJson(
+      `/backend-api/conversation/${encodeURIComponent(conversation.id)}`,
+      { gizmo_id: "" },
+    );
+    if (response.success !== true) {
+      throw new Error(
+        `ChatGPT did not confirm removal of conversation ${conversation.id} from ${options.openInBrowserProject}.`,
+      );
+    }
+    removed += 1;
+    console.log(
+      `Opened and removed from ${options.openInBrowserProject}: ${conversation.title}`,
+    );
+  }
+
+  const originalConversationIds = new Set(conversations.map(({ id }) => id));
+  const remainingConversationIds = new Set(
+    (await fetchAllProjectConversations(client, browserProject)).map(
+      (conversation) => conversation.id || conversation.conversation_id,
+    ),
+  );
+  const failedRemovals = [...originalConversationIds].filter(
+    (conversationId) => remainingConversationIds.has(conversationId),
+  );
+  if (failedRemovals.length > 0) {
+    throw new Error(
+      `ChatGPT left ${failedRemovals.length} opened conversation(s) in ${options.openInBrowserProject}.`,
+    );
+  }
+  return { opened, removed };
+}
+
+function openBraveTab(options, conversationUrl) {
+  const result = spawnSync(
+    options.braveExecutable,
+    [`--profile-directory=${options.braveProfile}`, "--new-tab", conversationUrl],
+    { encoding: "utf8" },
+  );
+  if (result.status === 0) return;
+
+  const detail = (result.stderr || result.error?.message || "unknown error").trim();
+  throw new UserFacingError(
+    `Could not open ChatGPT conversation in Brave: ${detail}`,
+  );
 }
 
 function hasReachedCandidateLimit(options, candidatesById) {
@@ -1269,6 +1419,8 @@ async function main() {
         `Skipped unchanged: ${result.summary.skippedUnchanged}`,
         `Attachments downloaded: ${result.summary.attachmentsDownloaded}`,
         `Attachment warnings: ${result.summary.attachmentWarnings}`,
+        `Browser tabs opened: ${result.summary.browserTabsOpened}`,
+        `Removed from browser queue: ${result.summary.projectConversationsRemoved}`,
       ].join("\n"),
     );
   }
@@ -1294,6 +1446,7 @@ export {
   formatRunGateStatus,
   isConversationCurrent,
   messageIdsToPersist,
+  openAndRemoveProjectConversations,
   parseArgs,
   syncChatGptConversations,
   timestampToMs,

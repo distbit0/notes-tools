@@ -30,6 +30,10 @@ test("live ChatGPT sync exports one real conversation when explicitly enabled", 
   const result = await syncChatGptConversations(options);
   assert.equal(result.status, "success");
   assert.equal(result.summary.exported, 1);
+  assert.equal(
+    result.summary.browserTabsOpened,
+    result.summary.projectConversationsRemoved,
+  );
 
   const entries = await readdir(outputRoot, { withFileTypes: true });
   const conversationDirs = entries.filter((entry) => entry.isDirectory());

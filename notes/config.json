@@ -3,6 +3,10 @@
   "friendsIndex": "friends-index.md",
   "cachePath": ".friend-idea-router-cache.json",
   "routeSectionHeading": "Routed discussion ideas",
+  "chatgptConversationSync": {
+    "openInBrowserProject": "open_in_browser",
+    "braveExecutable": "/usr/bin/brave-browser"
+  },
   "openRouter": {
     "responsesUrl": "https://openrouter.ai/api/v1/responses",
     "model": "minimax/minimax-m2.7",
