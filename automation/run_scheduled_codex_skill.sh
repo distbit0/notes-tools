@@ -1120,21 +1120,8 @@ ${extra_prompt}"
   codex_command+=(exec -C "$NOTES_DIR" --color never --json --output-last-message "$final_message_file" -)
 
   set +e
-  if [[ "$job_name" == "scheduled-goal-advancement" ]]; then
-    acquire_notes_auto_commit_lock
-    status=$?
-  else
-    status=0
-  fi
-
-  if (( status == 0 )); then
-    printf '%s\n' "$prompt" | "${codex_command[@]}" 7>&- 8>&- > "$run_event_file" 2> "$run_output_file"
-    status=$?
-  fi
-
-  if [[ "$job_name" == "scheduled-goal-advancement" ]]; then
-    exec 7>&-
-  fi
+  printf '%s\n' "$prompt" | "${codex_command[@]}" 7>&- 8>&- > "$run_event_file" 2> "$run_output_file"
+  status=$?
   set -e
 
   if [[ "$session_source" == "cli" ]]; then
@@ -1444,6 +1431,7 @@ mkdir -p "$LOG_DIR" "$STATE_DIR"
 
 exec 8>"${STATE_DIR}/run_scheduled_codex_skill.lock"
 flock 8
+acquire_notes_auto_commit_lock
 
 case "$run_mode" in
   all)

@@ -186,6 +186,28 @@ def test_goal_advancement_uses_a_profile_instead_of_full_access() -> None:
     )
 
 
+def test_scheduler_holds_notes_auto_commit_lock_for_entire_run() -> None:
+    scheduler_text = SCHEDULER.read_text(encoding="utf-8")
+    run_job = scheduler_text[
+        scheduler_text.index("run_and_record_codex_job()"):
+        scheduler_text.index("\nvalidate_job_config()")
+    ]
+    top_level = scheduler_text[scheduler_text.index("scheduled_codex_job_count=0") :]
+
+    assert "acquire_notes_auto_commit_lock" not in run_job
+    assert '"${codex_command[@]}" 7>&- 8>&-' in run_job
+    assert top_level.index('exec 8>"${STATE_DIR}/run_scheduled_codex_skill.lock"') < (
+        top_level.index("flock 8")
+    )
+    assert top_level.index("flock 8") < top_level.index(
+        "acquire_notes_auto_commit_lock"
+    )
+    assert top_level.index("acquire_notes_auto_commit_lock") < top_level.index(
+        'case "$run_mode" in'
+    )
+    assert "exec 7>&-" not in top_level
+
+
 def test_goal_advancement_waits_for_notes_auto_commit_lock(tmp_path: Path) -> None:
     lock_path = tmp_path / "git_auto_commit.lock"
     stderr_path = tmp_path / "scheduler.stderr"
