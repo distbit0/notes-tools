@@ -223,11 +223,90 @@ def test_goal_advancement_waits_for_notes_auto_commit_lock(tmp_path: Path) -> No
             raise AssertionError("scheduler did not wait on the held auto-commit lock")
 
         assert scheduler.poll() is None
+        global_lock_path = (
+            tmp_path / "state/scheduled-codex/run_scheduled_codex_skill.lock"
+        )
+        with global_lock_path.open("w", encoding="utf-8") as global_lock_file:
+            try:
+                fcntl.flock(global_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                pass
+            else:
+                fcntl.flock(global_lock_file, fcntl.LOCK_UN)
+                raise AssertionError(
+                    "goal advancement released the global scheduler lock"
+                )
         fcntl.flock(lock_file, fcntl.LOCK_UN)
 
     stdout, _stderr = scheduler.communicate(timeout=10)
     assert scheduler.returncode == 0
     assert "scheduled Codex job: scheduled-goal-advancement status=0" in stdout
+
+
+def test_global_scheduler_lock_remains_held_after_goal_job(tmp_path: Path) -> None:
+    executable_directory = tmp_path / "bin"
+    executable_directory.mkdir()
+    tee_started_path = tmp_path / "tee-started"
+    tee_release_path = tmp_path / "tee-release"
+    tee_script = executable_directory / "tee"
+    tee_script.write_text(
+        r"""#!/usr/bin/env bash
+printf '%s\n' "$$" >> "$TEST_TEE_STARTED"
+while [[ ! -e "$TEST_TEE_RELEASE" ]]; do
+  /usr/bin/sleep 0.01
+done
+exec /usr/bin/tee "$@"
+""",
+        encoding="utf-8",
+    )
+    tee_script.chmod(0o700)
+
+    environment = os.environ | {
+        "CODEX_BIN": "/usr/bin/true",
+        "PATH": f"{executable_directory}:{os.environ['PATH']}",
+        "SCHEDULED_CODEX_LOG_DIR": str(tmp_path / "logs"),
+        "SCHEDULED_CODEX_NOTES_AUTO_COMMIT_LOCK": str(
+            tmp_path / "git_auto_commit.lock"
+        ),
+        "TEST_TEE_RELEASE": str(tee_release_path),
+        "TEST_TEE_STARTED": str(tee_started_path),
+        "XDG_STATE_HOME": str(tmp_path / "state"),
+    }
+
+    def start_scheduler() -> subprocess.Popen[str]:
+        return subprocess.Popen(
+            [str(SCHEDULER), "--override", "scheduled-jobs", "0700"],
+            cwd=REPO_ROOT,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    first_scheduler = start_scheduler()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if tee_started_path.exists():
+            break
+        time.sleep(0.01)
+    else:
+        first_scheduler.terminate()
+        first_scheduler.wait(timeout=5)
+        raise AssertionError("first scheduler did not finish the goal job")
+
+    second_scheduler = start_scheduler()
+    time.sleep(0.1)
+    assert tee_started_path.read_text(encoding="utf-8").count("\n") == 1
+
+    tee_release_path.touch()
+    first_stdout, first_stderr = first_scheduler.communicate(timeout=10)
+    second_stdout, second_stderr = second_scheduler.communicate(timeout=10)
+
+    assert first_scheduler.returncode == 0, first_stderr
+    assert second_scheduler.returncode == 0, second_stderr
+    assert "scheduled Codex job: scheduled-goal-advancement status=0" in first_stdout
+    assert "scheduled Codex job: scheduled-goal-advancement status=0" in second_stdout
+    assert tee_started_path.read_text(encoding="utf-8").count("\n") == 2
 
 
 def test_no_claimable_ci_tasks_are_handled_without_errexit() -> None:

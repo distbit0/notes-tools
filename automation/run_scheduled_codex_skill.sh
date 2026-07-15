@@ -277,17 +277,17 @@ log_skipped_job() {
 }
 
 acquire_notes_auto_commit_lock() {
-  if ! exec 8>"$NOTES_AUTO_COMMIT_LOCK"; then
+  if ! exec 7>"$NOTES_AUTO_COMMIT_LOCK"; then
     echo "Could not open notes Git auto-commit lock: $NOTES_AUTO_COMMIT_LOCK" >&2
     return 1
   fi
 
-  if flock -n 8; then
+  if flock -n 7; then
     return 0
   fi
 
   echo "Notes Git auto-commit is active; waiting for its repository lock." >&2
-  flock 8
+  flock 7
 }
 
 desktop_error_count() {
@@ -1128,12 +1128,12 @@ ${extra_prompt}"
   fi
 
   if (( status == 0 )); then
-    printf '%s\n' "$prompt" | "${codex_command[@]}" 8>&- > "$run_event_file" 2> "$run_output_file"
+    printf '%s\n' "$prompt" | "${codex_command[@]}" 7>&- 8>&- > "$run_event_file" 2> "$run_output_file"
     status=$?
   fi
 
   if [[ "$job_name" == "scheduled-goal-advancement" ]]; then
-    exec 8>&-
+    exec 7>&-
   fi
   set -e
 
