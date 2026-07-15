@@ -27,13 +27,14 @@ def ensure_terminal_safe_markdown_path(path: Path) -> None:
 
 def configure_logger(log_path: Path) -> None:
     logger.remove()
-    logger.add(sys.stdout, level="INFO")
+    logger.add(sys.stdout, level="INFO", diagnose=False)
     logger.add(
         log_path,
         level="DEBUG",
         rotation="100 KB",
         retention=5,
         encoding="utf-8",
+        diagnose=False,
     )
 
 

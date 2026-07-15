@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,6 +9,7 @@ from typing import Any, Iterable
 
 import requests
 from bs4 import BeautifulSoup
+from loguru import logger
 
 
 BRAVE_COOKIES_PATH = (
@@ -25,6 +27,9 @@ STATE_BUCKETS = (
     "ethresearch_notification",
     "ethresearch_pm",
 )
+TRANSIENT_HTTP_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+GET_ATTEMPTS = 3
+GET_RETRY_DELAY_SECONDS = 2
 
 
 @dataclass(frozen=True)
@@ -229,14 +234,29 @@ def request_json(
     params: dict[str, str] | None = None,
     json_payload: dict[str, Any] | None = None,
 ) -> Any:
-    response = session.request(
-        method,
-        url,
-        headers=headers,
-        params=params,
-        json=json_payload,
-        timeout=30,
-    )
+    attempts = GET_ATTEMPTS if method.upper() == "GET" else 1
+    for attempt in range(1, attempts + 1):
+        response = session.request(
+            method,
+            url,
+            headers=headers,
+            params=params,
+            json=json_payload,
+            timeout=30,
+        )
+        should_retry = (
+            response.status_code in TRANSIENT_HTTP_STATUS_CODES
+            and attempt < attempts
+        )
+        if not should_retry:
+            break
+        logger.warning(
+            f"{url} returned HTTP {response.status_code}; retrying in "
+            f"{GET_RETRY_DELAY_SECONDS} seconds "
+            f"(attempt {attempt + 1}/{attempts})"
+        )
+        time.sleep(GET_RETRY_DELAY_SECONDS)
+
     if response.status_code >= 400:
         body = response.text.strip()
         raise RuntimeError(
