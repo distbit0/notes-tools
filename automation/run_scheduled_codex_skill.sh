@@ -394,6 +394,7 @@ $(cat "$prepare_file")
 Rules:
 - Do not ask follow-up questions.
 - If blocked, fail clearly instead of using a silent fallback.
+- The scheduler parent already holds $NOTES_AUTO_COMMIT_LOCK for this job. Do not acquire that lock again; make any required scoped Git commit directly.
 - Keep edits scoped to what the claimed tasks require.
 - After every claimed task is complete, blocked, or intentionally reduced to a drafted next step, run complete_c_bang_tasks.py with one report per task_id.
 - Summarize any files changed and anything surprising in the final response.
@@ -1082,6 +1083,7 @@ Working directory: $NOTES_DIR
 Rules:
 - Do not ask follow-up questions.
 - If blocked, fail clearly instead of using a silent fallback.
+- The scheduler parent already holds $NOTES_AUTO_COMMIT_LOCK for this job. Do not acquire that lock again; make any required scoped Git commit directly.
 - Keep edits scoped to what the skill requires.
 - Summarize any files changed and anything surprising in the final response.
 PROMPT

@@ -1,12 +1,25 @@
+import fcntl
 import os
-from teleportWikilinks import create_backlinks
-import frontmatter
 import re
-from utils import *
 import traceback
+from contextlib import contextmanager
+from pathlib import Path
+
+import frontmatter
+
+from teleportWikilinks import create_backlinks
+from utils import *
 
 
 SHARE_TOKEN_PATTERN = re.compile(r"(?<![\w-])#share(?![\w-])")
+
+
+@contextmanager
+def notes_repository_lock(directory):
+    lock_path = Path(directory) / ".git/git_auto_commit.lock"
+    with lock_path.open("a") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        yield
 
 
 def note_slug(value):
@@ -238,8 +251,13 @@ def process_single_file(fileName, gistFiles):
     return gistFiles
 
 
-if __name__ == "__main__":
+def main():
     config = getConfig()
     directory_to_scan = config.get("notesFolder")
-    create_backlinks(directory_to_scan)
-    process_markdown_files(directory_to_scan)
+    with notes_repository_lock(directory_to_scan):
+        create_backlinks(directory_to_scan)
+        process_markdown_files(directory_to_scan)
+
+
+if __name__ == "__main__":
+    main()

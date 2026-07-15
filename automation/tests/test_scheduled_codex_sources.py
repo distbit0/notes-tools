@@ -188,6 +188,10 @@ def test_goal_advancement_uses_a_profile_instead_of_full_access() -> None:
 
 def test_scheduler_holds_notes_auto_commit_lock_for_entire_run() -> None:
     scheduler_text = SCHEDULER.read_text(encoding="utf-8")
+    c_bang_prompt = scheduler_text[
+        scheduler_text.index("build_c_bang_prompt()"):
+        scheduler_text.index("\nrecord_c_bang_session_id()")
+    ]
     run_job = scheduler_text[
         scheduler_text.index("run_and_record_codex_job()"):
         scheduler_text.index("\nvalidate_job_config()")
@@ -196,6 +200,12 @@ def test_scheduler_holds_notes_auto_commit_lock_for_entire_run() -> None:
 
     assert "acquire_notes_auto_commit_lock" not in run_job
     assert '"${codex_command[@]}" 7>&- 8>&-' in run_job
+    lock_instruction = (
+        "The scheduler parent already holds $NOTES_AUTO_COMMIT_LOCK for this job. "
+        "Do not acquire that lock again"
+    )
+    assert lock_instruction in c_bang_prompt
+    assert lock_instruction in run_job
     assert top_level.index('exec 8>"${STATE_DIR}/run_scheduled_codex_skill.lock"') < (
         top_level.index("flock 8")
     )

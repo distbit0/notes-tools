@@ -1,5 +1,7 @@
+import fcntl
 from pathlib import Path
 import sys
+import threading
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -110,3 +112,26 @@ def test_real_notes_teleport_lookup_ignores_subdirectories() -> None:
     assert markdown_paths
     assert all(Path(path).parent == NOTES_FOLDER for path in markdown_paths)
     assert teleportWikilinks.find_file_by_name(str(NOTES_FOLDER), "SKILL.md") is None
+
+
+def test_notes_repository_lock_waits_for_existing_writer(tmp_path: Path) -> None:
+    notes_folder = tmp_path / "notes"
+    git_folder = notes_folder / ".git"
+    git_folder.mkdir(parents=True)
+    lock_path = git_folder / "git_auto_commit.lock"
+    lock_entered = threading.Event()
+
+    def acquire_lock() -> None:
+        with notesSync.notes_repository_lock(notes_folder):
+            lock_entered.set()
+
+    with lock_path.open("a") as existing_lock:
+        fcntl.flock(existing_lock, fcntl.LOCK_EX)
+        lock_thread = threading.Thread(target=acquire_lock)
+        lock_thread.start()
+        assert not lock_entered.wait(timeout=0.1)
+        fcntl.flock(existing_lock, fcntl.LOCK_UN)
+
+    assert lock_entered.wait(timeout=1)
+    lock_thread.join(timeout=1)
+    assert not lock_thread.is_alive()
