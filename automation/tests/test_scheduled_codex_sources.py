@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import fcntl
 from math import lcm
 import os
 import re
 from pathlib import Path
 import subprocess
+import time
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -182,6 +184,50 @@ def test_goal_advancement_uses_a_profile_instead_of_full_access() -> None:
     assert run_job.index('if [[ -n "$profile_name" ]]') < run_job.index(
         'codex_command+=(--dangerously-bypass-approvals-and-sandbox)'
     )
+
+
+def test_goal_advancement_waits_for_notes_auto_commit_lock(tmp_path: Path) -> None:
+    lock_path = tmp_path / "git_auto_commit.lock"
+    stderr_path = tmp_path / "scheduler.stderr"
+    environment = os.environ | {
+        "CODEX_BIN": "/usr/bin/true",
+        "SCHEDULED_CODEX_LOG_DIR": str(tmp_path / "logs"),
+        "SCHEDULED_CODEX_NOTES_AUTO_COMMIT_LOCK": str(lock_path),
+        "XDG_STATE_HOME": str(tmp_path / "state"),
+    }
+
+    with lock_path.open("w", encoding="utf-8") as lock_file, stderr_path.open(
+        "w", encoding="utf-8"
+    ) as stderr_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        scheduler = subprocess.Popen(
+            [str(SCHEDULER), "--override", "scheduled-jobs", "0700"],
+            cwd=REPO_ROOT,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=stderr_file,
+        )
+
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            stderr_file.flush()
+            if "waiting for its repository lock" in stderr_path.read_text(
+                encoding="utf-8"
+            ):
+                break
+            time.sleep(0.01)
+        else:
+            scheduler.terminate()
+            scheduler.wait(timeout=5)
+            raise AssertionError("scheduler did not wait on the held auto-commit lock")
+
+        assert scheduler.poll() is None
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+    stdout, _stderr = scheduler.communicate(timeout=10)
+    assert scheduler.returncode == 0
+    assert "scheduled Codex job: scheduled-goal-advancement status=0" in stdout
 
 
 def test_no_claimable_ci_tasks_are_handled_without_errexit() -> None:

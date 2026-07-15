@@ -7,7 +7,7 @@ readonly CODEX_HOME_DIR="${CODEX_HOME:-${HOME}/.codex}"
 readonly HERDR_BIN="${HERDR_BIN:-${HOME}/.local/bin/herdr}"
 readonly NOTES_DIR="${HOME}/notes"
 readonly TOOLS_DIR="${HOME}/dev/notes-tools"
-readonly LOG_DIR="${TOOLS_DIR}/automation/scheduled-codex-logs"
+readonly LOG_DIR="${SCHEDULED_CODEX_LOG_DIR:-${TOOLS_DIR}/automation/scheduled-codex-logs}"
 readonly INTERACTIVE_CODEX_SESSION_RUNNER="${TOOLS_DIR}/automation/run_interactive_codex_session.sh"
 readonly HERDR_LAUNCHER="${HERDR_LAUNCHER:-${HOME}/dev/misc/desktop/herdr-launch.sh}"
 readonly LOG_MAX_BYTES="${SCHEDULED_CODEX_LOG_MAX_BYTES:-200000}"
@@ -15,6 +15,7 @@ readonly STATE_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/scheduled-codex"
 readonly MESSAGE_REPLY_CHANGED_NOTES_FILE="${STATE_DIR}/message-reply-changed-notes.txt"
 readonly DESKTOP_ERROR_LOG="${DESKTOP_ERROR_LOG_PATH:-${HOME}/dev/error_log.txt}"
 readonly DESKTOP_ERROR_LOGGER="${DESKTOP_ERROR_LOGGER:-${HOME}/dev/misc/automation/log_desktop_error.sh}"
+readonly NOTES_AUTO_COMMIT_LOCK="${SCHEDULED_CODEX_NOTES_AUTO_COMMIT_LOCK:-${NOTES_DIR}/.git/git_auto_commit.lock}"
 readonly CATCHUP_GRACE_SECONDS=600
 readonly HERDR_CODEX_INPUT_DELAY_MS="${HERDR_CODEX_INPUT_DELAY_MS:-3000}"
 
@@ -273,6 +274,20 @@ log_skipped_job() {
   printf '[%s] skipped scheduled Codex job: %s; %s.\n' \
     "$(date --iso-8601=seconds)" "$job_name" "$reason" \
     | append_job_log "${LOG_DIR}/${job_name}.log"
+}
+
+acquire_notes_auto_commit_lock() {
+  if ! exec 8>"$NOTES_AUTO_COMMIT_LOCK"; then
+    echo "Could not open notes Git auto-commit lock: $NOTES_AUTO_COMMIT_LOCK" >&2
+    return 1
+  fi
+
+  if flock -n 8; then
+    return 0
+  fi
+
+  echo "Notes Git auto-commit is active; waiting for its repository lock." >&2
+  flock 8
 }
 
 desktop_error_count() {
@@ -1105,8 +1120,21 @@ ${extra_prompt}"
   codex_command+=(exec -C "$NOTES_DIR" --color never --json --output-last-message "$final_message_file" -)
 
   set +e
-  printf '%s\n' "$prompt" | "${codex_command[@]}" > "$run_event_file" 2> "$run_output_file"
-  status=$?
+  if [[ "$job_name" == "scheduled-goal-advancement" ]]; then
+    acquire_notes_auto_commit_lock
+    status=$?
+  else
+    status=0
+  fi
+
+  if (( status == 0 )); then
+    printf '%s\n' "$prompt" | "${codex_command[@]}" 8>&- > "$run_event_file" 2> "$run_output_file"
+    status=$?
+  fi
+
+  if [[ "$job_name" == "scheduled-goal-advancement" ]]; then
+    exec 8>&-
+  fi
   set -e
 
   if [[ "$session_source" == "cli" ]]; then
