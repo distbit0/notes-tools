@@ -12,62 +12,73 @@ NOTES_DIR = Path.home() / "notes"
 SKILLS_DIR = NOTES_DIR / ".agents/skills"
 ERROR_LOGGER = Path.home() / "dev/misc/automation/log_desktop_error.sh"
 
-RECURRING_SKILLS = {
-    "scheduled-answer-open-questions",
-    "scheduled-c-bang-executor",
-    "scheduled-ci-bang-interactive",
-    "scheduled-distill-assistant-chats",
-    "scheduled-draft-message-replies",
+SPECIALIST_SKILLS = {
     "scheduled-fix-logged-errors",
-    "scheduled-goal-advancement",
-    "scheduled-hard-feedback",
-    "scheduled-idea-space-search",
-    "scheduled-infolio-relevance",
-    "scheduled-note-critique",
     "scheduled-resolve-contradictions",
-    "scheduled-security-audit",
-    "scheduled-tweet-ideas",
+}
+ROUTING_REFERENCES = {
+    "contradict",
+    "desktop error",
+    "error reporting",
+    "error_log",
+    "log_desktop_error",
 }
 
 
-def test_every_recurring_skill_separates_technical_errors_from_note_conflicts() -> None:
-    actual_skills = {
-        skill_file.parent.name
-        for skill_file in SKILLS_DIR.glob("scheduled-*/SKILL.md")
-    }
-    assert actual_skills == RECURRING_SKILLS
+def test_agents_md_is_the_shared_log_routing_authority() -> None:
+    agents_text = (NOTES_DIR / "AGENTS.md").read_text(encoding="utf-8")
 
-    for skill_name in actual_skills:
-        skill_text = (SKILLS_DIR / skill_name / "SKILL.md").read_text(encoding="utf-8")
-        assert "## Error Reporting" in skill_text
-        assert f"log_desktop_error.sh {skill_name} TITLE MESSAGE DETAILS" in skill_text
-        assert "technical or operational" in skill_text
-        assert "required technical verification" in skill_text
-        assert "contradictions.md" in skill_text
-        assert "substantive nontechnical" in skill_text
-        assert "feedback" in skill_text
-        assert "Do not log expected" in skill_text or "Do not relog records" in skill_text
-
-    creator_text = (SKILLS_DIR / "schedule-codex-skill/SKILL.md").read_text(
-        encoding="utf-8"
-    )
-    assert "technical or operational" in creator_text
-    assert "required technical verification" in creator_text
-    assert "contradictions.md" in creator_text
-    assert "substantive nontechnical" in creator_text
+    assert "[[contradictions]]" in agents_text
+    assert "/home/pimania/dev/error_log.txt" in agents_text
+    assert "/home/pimania/dev/misc/automation/log_desktop_error.sh" in agents_text
+    assert "technical or operational" in agents_text
+    assert "recovery status" in agents_text
+    assert "current thread ID" in agents_text
+    assert "scheduler log path" in agents_text
+    assert "relevant writable skill or task feedback" in agents_text
+    assert "final response when no writable feedback destination exists" in agents_text
 
 
-def test_scheduler_prompts_enforce_the_same_reporting_boundary() -> None:
+def test_only_specialist_skill_packages_reference_shared_log_routing() -> None:
+    skill_files = [
+        *SKILLS_DIR.glob("*/SKILL.md"),
+        *SKILLS_DIR.glob("*/agents/openai.yaml"),
+    ]
+
+    for skill_file in skill_files:
+        skill_name = (
+            skill_file.parents[1].name
+            if skill_file.name == "openai.yaml"
+            else skill_file.parent.name
+        )
+        if skill_name in SPECIALIST_SKILLS:
+            continue
+
+        skill_text = skill_file.read_text(encoding="utf-8").lower()
+        for routing_reference in ROUTING_REFERENCES:
+            assert routing_reference not in skill_text, (
+                f"{skill_name} duplicates AGENTS.md routing for "
+                f"{routing_reference}"
+            )
+
+
+def test_scheduler_prompts_defer_shared_log_routing_to_agents_md() -> None:
     scheduler_text = SCHEDULER.read_text(encoding="utf-8")
+    prompt_sections = (
+        scheduler_text[
+            scheduler_text.index("build_c_bang_prompt()"):
+            scheduler_text.index("\nrecord_c_bang_session_id()")
+        ],
+        scheduler_text[
+            scheduler_text.index("run_and_record_codex_job()"):
+            scheduler_text.index("\nvalidate_job_config()")
+        ],
+    )
 
-    assert scheduler_text.count("only for distinct material technical or operational") == 2
-    assert scheduler_text.count("incomplete required technical verification") == 2
-    assert scheduler_text.count(
-        "Record note-content contradictions in /home/pimania/notes/contradictions.md instead."
-    ) == 2
-    assert scheduler_text.count(
-        "Record other substantive nontechnical limitations in the skill or task feedback."
-    ) == 2
+    for prompt_section in prompt_sections:
+        prompt_section = prompt_section.lower()
+        for routing_reference in ROUTING_REFERENCES:
+            assert routing_reference not in prompt_section
 
 
 def test_logged_error_fixer_requires_context_complete_judgment_based_reports() -> None:
@@ -118,15 +129,6 @@ def test_contradiction_resolver_prioritizes_insight_and_preserves_sources() -> N
     assert "atomic" in skill_text
     assert "additive" in skill_text
     assert "feedback.md" in skill_text
-
-
-def test_security_audit_read_only_boundary_allows_contradiction_routing() -> None:
-    skill_text = (SKILLS_DIR / "scheduled-security-audit/SKILL.md").read_text(
-        encoding="utf-8"
-    )
-
-    assert "read-only except" in skill_text
-    assert "/home/pimania/notes/contradictions.md" in skill_text
 
 
 def test_runner_fallback_uses_only_redacted_status_metadata() -> None:

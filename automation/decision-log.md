@@ -1,11 +1,10 @@
 # Decision Log
 
-## Contradiction resolution scheduling and reporting boundary
+## Scheduled contradiction processing
 
-- Date: 2026-07-15
-- Decision: run `scheduled-resolve-contradictions` every six days at 04:00 on phase 1 as an unattended `exec` session. Its phase is disjoint from the three-day tweet job and the other six-day 04:00 job.
+- Date: 2026-07-16
+- Decision: run `scheduled-resolve-contradictions` every six days at 04:00 on phase 1 as an unattended `exec` session, and disable the separate `scheduled-note-critique` detector. The resolver's phase is disjoint from the three-day tweet job and the other six-day 04:00 job.
 - Purpose: use contradictions to find consequential errors in prior thinking, derive novel or useful implications, and propose improvements rather than merely reconcile incompatible statements.
-- Reporting boundary: `/home/pimania/dev/error_log.txt` is only for technical or operational failures and incomplete required technical verification. Note-content contradictions go to `/home/pimania/notes/contradictions.md`; other substantive nontechnical limitations remain in the originating skill or task feedback.
 
 ## Daily goal advancement scheduling
 
@@ -24,8 +23,8 @@
 ## Scheduled skill cadence revision
 
 - Date: 2026-07-13
-- Decision: run tweet ideas every three days at 04:00; idea-space search and note critique every five days at 05:00 on separate phases; the security audit every three weeks on Sunday at 11:00; and assistant-chat distillation every two days at 16:00.
-- Rationale: the requested three-day tweet cadence and five-day idea cadences must eventually coincide if they share 04:00. Moving the two five-day jobs to a dedicated 05:00 slot preserves the one-Codex-job-per-slot invariant without changing their requested frequencies.
+- Decision: run tweet ideas every three days at 04:00; idea-space search every five days at 05:00; the security audit every three weeks on Sunday at 11:00; and assistant-chat distillation every two days at 16:00.
+- Rationale: separating the three-day and five-day jobs preserves the one-Codex-job-per-slot invariant without changing their requested frequencies.
 - Reliability: cadence phase is derived from the scheduled slot, not the wall-clock replay time, so a persistent timer catch-up after the slot cannot incorrectly skip a due job. This fixes the missed tweet-ideas catch-up observed on 2026-07-08.
 
 ## Scheduled Infolio relevance preparation
