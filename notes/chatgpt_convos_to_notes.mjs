@@ -24,6 +24,10 @@ const DEFAULT_STATE_PATH = path.join(
   HOME_DIR,
   ".local/state/chatgpt-convos-to-notes/state.json",
 );
+const DEFAULT_BROWSER_STATE_PATH = path.join(
+  HOME_DIR,
+  ".local/state/chatgpt-browser-actions/state.json",
+);
 const DEFAULT_BRAVE_ROOT = path.join(
   HOME_DIR,
   ".config/BraveSoftware/Brave-Browser",
@@ -50,17 +54,21 @@ class NonRetryableRequestError extends Error {}
 function usage() {
   return `Usage: chatgpt_convos_to_notes.mjs [options]
 
-Sync active ChatGPT conversations newer than the cutoff into ~/notes.
+Archive active ChatGPT conversations newer than the cutoff into ~/notes, or run
+the independent browser actions.
 
 Options:
   --output <dir>             Output root (default: ${DEFAULT_OUTPUT_ROOT})
-  --state <file>             Runtime ledger (default: ${DEFAULT_STATE_PATH})
+  --state <file>             Archive ledger (default: ${DEFAULT_STATE_PATH})
+  --browser-actions          Drain the browser queue and open interactive HTML
+  --browser-state <file>     Browser-actions ledger
+                             (default: ${DEFAULT_BROWSER_STATE_PATH})
   --cutoff <iso>             Include conversations updated at/after this time
                              (default: ${DEFAULT_CUTOFF_ISO})
   --profile <name>           Brave profile name (default: ${DEFAULT_BRAVE_PROFILE})
   --brave-root <dir>         Brave user data root (default: ${DEFAULT_BRAVE_ROOT})
   --bearer <token>           Use this bearer token instead of Brave cookies
-  --max-conversations <n>    Export at most n conversations this run
+  --max-conversations <n>    Process at most n conversations this run
   --request-delay-ms <n>     Minimum delay between requests (default: 4000)
   --jitter-ms <n>            Additional random request delay (default: 1000)
   --force-run                Bypass the local twice/day and 6-hour start gate
@@ -93,6 +101,7 @@ function parseArgs(argv, browserQueue = loadConfiguration()) {
   const options = {
     outputRoot: DEFAULT_OUTPUT_ROOT,
     statePath: DEFAULT_STATE_PATH,
+    browserStatePath: DEFAULT_BROWSER_STATE_PATH,
     cutoffIso: DEFAULT_CUTOFF_ISO,
     braveRoot: DEFAULT_BRAVE_ROOT,
     braveProfile: DEFAULT_BRAVE_PROFILE,
@@ -103,6 +112,7 @@ function parseArgs(argv, browserQueue = loadConfiguration()) {
     maxConversations: null,
     statusOnly: false,
     forceRun: false,
+    browserActionsOnly: false,
     bearer: process.env.CHATGPT_BEARER_TOKEN || "",
     openInBrowserProject: browserQueue.openInBrowserProject,
     braveExecutable: browserQueue.braveExecutable,
@@ -125,6 +135,10 @@ function parseArgs(argv, browserQueue = loadConfiguration()) {
       options.outputRoot = path.resolve(value());
     } else if (arg === "--state") {
       options.statePath = path.resolve(value());
+    } else if (arg === "--browser-actions") {
+      options.browserActionsOnly = true;
+    } else if (arg === "--browser-state") {
+      options.browserStatePath = path.resolve(value());
     } else if (arg === "--cutoff") {
       options.cutoffIso = value();
     } else if (arg === "--profile") {
@@ -151,6 +165,11 @@ function parseArgs(argv, browserQueue = loadConfiguration()) {
   options.cutoffMs = Date.parse(options.cutoffIso);
   if (!Number.isFinite(options.cutoffMs)) {
     throw new UserFacingError(`Invalid --cutoff value: ${options.cutoffIso}`);
+  }
+  if (options.browserActionsOnly && (options.statusOnly || options.forceRun)) {
+    throw new UserFacingError(
+      "--browser-actions cannot be combined with archive-only --status or --force-run.",
+    );
   }
   return options;
 }
@@ -180,6 +199,28 @@ function defaultState() {
   };
 }
 
+function defaultBrowserActionState(archiveState) {
+  const conversations = {};
+  for (const [conversationId, archiveRecord] of Object.entries(
+    archiveState.conversations,
+  )) {
+    if (
+      archiveRecord.interactiveHtmlCheckedUpdateTimeMs === undefined &&
+      !archiveRecord.interactiveHtmlOpenedAt
+    ) {
+      continue;
+    }
+    conversations[conversationId] = {
+      interactiveHtmlCheckedUpdateTimeMs:
+        archiveRecord.interactiveHtmlCheckedUpdateTimeMs,
+      ...(archiveRecord.interactiveHtmlOpenedAt
+        ? { interactiveHtmlOpenedAt: archiveRecord.interactiveHtmlOpenedAt }
+        : {}),
+    };
+  }
+  return { version: 1, conversations };
+}
+
 async function loadState(statePath) {
   if (!existsSync(statePath)) return defaultState();
 
@@ -193,6 +234,28 @@ async function loadState(statePath) {
         ? state.conversations
         : {},
     projects: state.projects && typeof state.projects === "object" ? state.projects : {},
+  };
+}
+
+async function loadBrowserActionState(browserStatePath, archiveState) {
+  if (!existsSync(browserStatePath)) {
+    const migratedState = defaultBrowserActionState(archiveState);
+    const migratedCount = Object.keys(migratedState.conversations).length;
+    if (migratedCount > 0) {
+      console.log(
+        `Migrated interactive HTML history for ${migratedCount} conversation(s) from the archive ledger.`,
+      );
+    }
+    return migratedState;
+  }
+
+  const state = JSON.parse(await readFile(browserStatePath, "utf8"));
+  return {
+    version: 1,
+    conversations:
+      state.conversations && typeof state.conversations === "object"
+        ? state.conversations
+        : {},
   };
 }
 
@@ -583,10 +646,6 @@ async function syncChatGptConversations(options) {
     exported: 0,
     attachmentsDownloaded: 0,
     attachmentWarnings: 0,
-    browserTabsOpened: 0,
-    projectConversationsRemoved: 0,
-    interactiveHtmlConversationsChecked: 0,
-    interactiveHtmlTabsOpened: 0,
   };
 
   try {
@@ -599,75 +658,31 @@ async function syncChatGptConversations(options) {
 
     for (const candidate of candidates) {
       const conversationIsCurrent = isConversationCurrent(state, candidate);
-      const interactiveHtmlCheckNeeded = needsInteractiveHtmlCheck(
-        state.conversations[candidate.id],
-        candidate,
-      );
       if (conversationIsCurrent) {
         summary.skippedUnchanged += 1;
-      }
-      if (conversationIsCurrent && !interactiveHtmlCheckNeeded) {
         continue;
       }
 
-      let conversation = null;
-      if (!conversationIsCurrent) {
-        console.log(`Exporting ${candidate.title || candidate.id}`);
-        conversation = await client.fetchBackendJson(
-          `/backend-api/conversation/${encodeURIComponent(candidate.id)}`,
-        );
-        const result = await exportConversation(
-          client,
-          options.outputRoot,
-          state,
-          candidate,
-          conversation,
-        );
-        if (result.messagesWritten > 0) {
-          summary.exported += 1;
-        } else {
-          summary.skippedUnchanged += 1;
-        }
-        summary.attachmentsDownloaded += result.attachmentsDownloaded;
-        summary.attachmentWarnings += result.attachmentWarnings;
+      console.log(`Exporting ${candidate.title || candidate.id}`);
+      const conversation = await client.fetchBackendJson(
+        `/backend-api/conversation/${encodeURIComponent(candidate.id)}`,
+      );
+      const result = await exportConversation(
+        client,
+        options.outputRoot,
+        state,
+        candidate,
+        conversation,
+      );
+      if (result.messagesWritten > 0) {
+        summary.exported += 1;
+      } else {
+        summary.skippedUnchanged += 1;
       }
-
-      if (interactiveHtmlCheckNeeded) {
-        if (
-          !conversation &&
-          (await archiveMayContainInteractiveHtml(
-            options.outputRoot,
-            state.conversations[candidate.id],
-          ))
-        ) {
-          conversation = await client.fetchBackendJson(
-            `/backend-api/conversation/${encodeURIComponent(candidate.id)}`,
-          );
-        }
-
-        const record = state.conversations[candidate.id];
-        if (conversation && lastAssistantContainsInteractiveHtml(conversation)) {
-          openBraveTab(
-            options,
-            `https://chatgpt.com/c/${encodeURIComponent(candidate.id)}`,
-          );
-          record.interactiveHtmlOpenedAt = new Date().toISOString();
-          summary.interactiveHtmlTabsOpened += 1;
-          console.log(`Opened interactive HTML conversation: ${candidate.title}`);
-        }
-        record.interactiveHtmlCheckedUpdateTimeMs = candidate.updateTimeMs;
-        summary.interactiveHtmlConversationsChecked += 1;
-      }
+      summary.attachmentsDownloaded += result.attachmentsDownloaded;
+      summary.attachmentWarnings += result.attachmentWarnings;
       await saveState(options.statePath, state);
     }
-
-    const browserQueueResult = await openAndRemoveProjectConversations(
-      client,
-      options,
-      projects,
-    );
-    summary.browserTabsOpened = browserQueueResult.opened;
-    summary.projectConversationsRemoved = browserQueueResult.removed;
 
     await finalizeRun(options.statePath, state, run, "success", summary);
     return { status: "success", summary };
@@ -678,6 +693,74 @@ async function syncChatGptConversations(options) {
     });
     throw error;
   }
+}
+
+async function runBrowserActions(options) {
+  const archiveState = await loadState(options.statePath);
+  const browserState = await loadBrowserActionState(
+    options.browserStatePath,
+    archiveState,
+  );
+  await saveState(options.browserStatePath, browserState);
+
+  const summary = {
+    discovered: 0,
+    interactiveHtmlConversationsChecked: 0,
+    interactiveHtmlTabsOpened: 0,
+    browserQueueTabsOpened: 0,
+    projectConversationsRemoved: 0,
+  };
+  const client = new ChatGptClient(options);
+  await client.initialize();
+
+  const projects = await fetchProjects(client);
+  const candidates = await collectCandidates(client, options, projects);
+  summary.discovered = candidates.length;
+  const openedThisRun = new Set();
+
+  for (const candidate of candidates) {
+    const browserRecord = browserState.conversations[candidate.id] || {};
+    if (!needsInteractiveHtmlCheck(browserRecord, candidate)) continue;
+
+    let conversation = null;
+    const archiveIsCurrent = isConversationCurrent(archiveState, candidate);
+    if (
+      !archiveIsCurrent ||
+      (await archiveMayContainInteractiveHtml(
+        options.outputRoot,
+        archiveState.conversations[candidate.id],
+      ))
+    ) {
+      conversation = await client.fetchBackendJson(
+        `/backend-api/conversation/${encodeURIComponent(candidate.id)}`,
+      );
+    }
+
+    if (conversation && lastAssistantContainsInteractiveHtml(conversation)) {
+      openBraveTab(
+        options,
+        `https://chatgpt.com/c/${encodeURIComponent(candidate.id)}`,
+      );
+      browserRecord.interactiveHtmlOpenedAt = new Date().toISOString();
+      summary.interactiveHtmlTabsOpened += 1;
+      openedThisRun.add(candidate.id);
+      console.log(`Opened interactive HTML conversation: ${candidate.title}`);
+    }
+    browserRecord.interactiveHtmlCheckedUpdateTimeMs = candidate.updateTimeMs;
+    browserState.conversations[candidate.id] = browserRecord;
+    summary.interactiveHtmlConversationsChecked += 1;
+    await saveState(options.browserStatePath, browserState);
+  }
+
+  const browserQueueResult = await openAndRemoveProjectConversations(
+    client,
+    options,
+    projects,
+    openedThisRun,
+  );
+  summary.browserQueueTabsOpened = browserQueueResult.opened;
+  summary.projectConversationsRemoved = browserQueueResult.removed;
+  return { status: "success", summary };
 }
 
 async function collectCandidates(client, options, projects) {
@@ -800,7 +883,12 @@ async function fetchAllProjectConversations(client, project) {
   return conversations;
 }
 
-async function openAndRemoveProjectConversations(client, options, projects) {
+async function openAndRemoveProjectConversations(
+  client,
+  options,
+  projects,
+  alreadyOpenedConversationIds = new Set(),
+) {
   const matchingProjects = projects.filter(
     (project) => project.name === options.openInBrowserProject,
   );
@@ -837,6 +925,7 @@ async function openAndRemoveProjectConversations(client, options, projects) {
 
   let opened = 0;
   for (const conversation of conversations) {
+    if (alreadyOpenedConversationIds.has(conversation.id)) continue;
     const conversationUrl = `https://chatgpt.com/c/${encodeURIComponent(
       conversation.id,
     )}`;
@@ -1502,8 +1591,22 @@ async function main() {
     return;
   }
 
-  const result = await syncChatGptConversations(options);
+  const result = options.browserActionsOnly
+    ? await runBrowserActions(options)
+    : await syncChatGptConversations(options);
   if (result.summary) {
+    if (options.browserActionsOnly) {
+      console.log(
+        [
+          `Discovered: ${result.summary.discovered}`,
+          `Interactive HTML conversations checked: ${result.summary.interactiveHtmlConversationsChecked}`,
+          `Interactive HTML tabs opened: ${result.summary.interactiveHtmlTabsOpened}`,
+          `Browser queue tabs opened: ${result.summary.browserQueueTabsOpened}`,
+          `Removed from browser queue: ${result.summary.projectConversationsRemoved}`,
+        ].join("\n"),
+      );
+      return;
+    }
     console.log(
       [
         `Discovered: ${result.summary.discovered}`,
@@ -1511,10 +1614,6 @@ async function main() {
         `Skipped unchanged: ${result.summary.skippedUnchanged}`,
         `Attachments downloaded: ${result.summary.attachmentsDownloaded}`,
         `Attachment warnings: ${result.summary.attachmentWarnings}`,
-        `Browser tabs opened: ${result.summary.browserTabsOpened}`,
-        `Removed from browser queue: ${result.summary.projectConversationsRemoved}`,
-        `Interactive HTML conversations checked: ${result.summary.interactiveHtmlConversationsChecked}`,
-        `Interactive HTML tabs opened: ${result.summary.interactiveHtmlTabsOpened}`,
       ].join("\n"),
     );
   }
@@ -1543,6 +1642,7 @@ export {
   messageIdsToPersist,
   openAndRemoveProjectConversations,
   parseArgs,
+  runBrowserActions,
   syncChatGptConversations,
   timestampToMs,
 };

@@ -1,15 +1,11 @@
 # Decision Log
 
-## 2026-07-16: Open interactive HTML conversations once
+## 2026-07-16: ChatGPT browser actions run independently
 
-- Open a conversation in Brave when its latest visible assistant message contains generated sandbox HTML or direct `text/html` content.
-- Persist both the last checked update time and the successful open time in the conversation ledger. Updated non-matches are reconsidered; a conversation that has opened once is never opened again by this rule.
-- Existing current exports without any HTML hint are ruled out locally; possible matches and missing exports are verified from the live conversation response.
-
-## 2026-07-16: ChatGPT project as a browser handoff queue
-
-- After a successful archive pass, the conversation sync opens every chat in the configured `open_in_browser` project as a new Brave tab, then removes its project association through the ChatGPT backend API.
-- The project itself is the retry ledger: a chat remains queued if Brave cannot accept the tab or the API removal fails. The sync records no second queue state.
+- A dedicated `--browser-actions` mode runs every two hours, independently of the 03:00/15:00 archive export and its run gate.
+- It opens a conversation in Brave when the latest visible assistant message contains generated sandbox HTML or direct `text/html`, recording successful opens in a separate browser-actions ledger so each matching conversation opens once. Existing archive history is migrated into that ledger.
+- It also drains the configured `open_in_browser` project: each chat opens as a new Brave tab and is then removed from the project. The project remains the retry ledger if opening or removal fails.
+- Current archive Markdown rules out clear non-matches locally; possible matches and new or changed conversations are verified from the live conversation response.
 
 ## 2026-07-14: ChatGPT conversation sync schedule
 

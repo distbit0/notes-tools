@@ -8,6 +8,7 @@ import {
   ChatGptClient,
   lastAssistantContainsInteractiveHtml,
   parseArgs,
+  runBrowserActions,
   syncChatGptConversations,
 } from "../chatgpt_convos_to_notes.mjs";
 
@@ -38,10 +39,6 @@ test("live ChatGPT sync exports one real conversation when explicitly enabled", 
   const result = await syncChatGptConversations(options);
   assert.equal(result.status, "success");
   assert.equal(result.summary.exported, 1);
-  assert.equal(
-    result.summary.browserTabsOpened,
-    result.summary.projectConversationsRemoved,
-  );
 
   const entries = await readdir(outputRoot, { withFileTypes: true });
   const conversationDirs = entries.filter((entry) => entry.isDirectory());
@@ -55,6 +52,31 @@ test("live ChatGPT sync exports one real conversation when explicitly enabled", 
   const markdown = await readFile(markdownPath, "utf8");
   assert.match(markdown, /^---\n/);
   assert.match(markdown, /chatgpt_url: "https:\/\/chatgpt\.com\/c\//);
+});
+
+test("live browser actions run through their independent ledger", async (t) => {
+  if (process.env.CHATGPT_LIVE_TEST !== "1") {
+    t.skip("set CHATGPT_LIVE_TEST=1 to run against the live ChatGPT account");
+    return;
+  }
+
+  const result = await runBrowserActions(
+    parseArgs([
+      "--browser-actions",
+      "--max-conversations",
+      "1",
+      "--request-delay-ms",
+      "4000",
+      "--jitter-ms",
+      "1000",
+    ]),
+  );
+  assert.equal(result.status, "success");
+  assert.equal(
+    result.summary.browserQueueTabsOpened <=
+      result.summary.projectConversationsRemoved,
+    true,
+  );
 });
 
 test("live detector requires interactive HTML in the latest assistant message", async (t) => {
