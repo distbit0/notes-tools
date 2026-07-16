@@ -4,7 +4,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { parseArgs, syncChatGptConversations } from "../chatgpt_convos_to_notes.mjs";
+import {
+  ChatGptClient,
+  lastAssistantContainsInteractiveHtml,
+  parseArgs,
+  syncChatGptConversations,
+} from "../chatgpt_convos_to_notes.mjs";
+
+const INTERACTIVE_HTML_CONVERSATION_ID = "6a574dc0-214c-83ea-ad0d-b10364460686";
+const EARLIER_HTML_ONLY_CONVERSATION_ID = "6a45cd8d-e73c-83ea-a0e5-2f6ec490018e";
 
 test("live ChatGPT sync exports one real conversation when explicitly enabled", async (t) => {
   if (process.env.CHATGPT_LIVE_TEST !== "1") {
@@ -47,4 +55,29 @@ test("live ChatGPT sync exports one real conversation when explicitly enabled", 
   const markdown = await readFile(markdownPath, "utf8");
   assert.match(markdown, /^---\n/);
   assert.match(markdown, /chatgpt_url: "https:\/\/chatgpt\.com\/c\//);
+});
+
+test("live detector requires interactive HTML in the latest assistant message", async (t) => {
+  if (process.env.CHATGPT_LIVE_TEST !== "1") {
+    t.skip("set CHATGPT_LIVE_TEST=1 to run against the live ChatGPT account");
+    return;
+  }
+
+  const client = new ChatGptClient(parseArgs([]));
+  await client.initialize();
+  const interactiveConversation = await client.fetchBackendJson(
+    `/backend-api/conversation/${INTERACTIVE_HTML_CONVERSATION_ID}`,
+  );
+  const earlierHtmlOnlyConversation = await client.fetchBackendJson(
+    `/backend-api/conversation/${EARLIER_HTML_ONLY_CONVERSATION_ID}`,
+  );
+
+  assert.equal(
+    lastAssistantContainsInteractiveHtml(interactiveConversation),
+    true,
+  );
+  assert.equal(
+    lastAssistantContainsInteractiveHtml(earlierHtmlOnlyConversation),
+    false,
+  );
 });

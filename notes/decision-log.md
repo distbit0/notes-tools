@@ -1,5 +1,11 @@
 # Decision Log
 
+## 2026-07-16: Open interactive HTML conversations once
+
+- Open a conversation in Brave when its latest visible assistant message contains generated sandbox HTML or direct `text/html` content.
+- Persist both the last checked update time and the successful open time in the conversation ledger. Updated non-matches are reconsidered; a conversation that has opened once is never opened again by this rule.
+- Existing current exports without any HTML hint are ruled out locally; possible matches and missing exports are verified from the live conversation response.
+
 ## 2026-07-16: ChatGPT project as a browser handoff queue
 
 - After a successful archive pass, the conversation sync opens every chat in the configured `open_in_browser` project as a new Brave tab, then removes its project association through the ChatGPT backend API.

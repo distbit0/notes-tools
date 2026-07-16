@@ -35,6 +35,9 @@ const MARKDOWN_FORMAT_VERSION = 3;
 const CONVERSATIONS_PAGE_SIZE = 28;
 const REQUEST_RETRY_LIMIT = 3;
 const REQUEST_TIMEOUT_MS = 60_000;
+const INTERACTIVE_HTML_LINK_PATTERN =
+  /\bsandbox:\/{1,2}[^\s)\]>"']+[.]html(?:[?#][^\s)\]>"']*)?/i;
+const ARCHIVED_HTML_HINT_PATTERN = /[.]html(?:[?#)\]\s]|$)|\btext\/html\b/i;
 const PERMANENT_ATTACHMENT_STATUSES = new Set([
   "downloaded",
   "file_not_found",
@@ -582,6 +585,8 @@ async function syncChatGptConversations(options) {
     attachmentWarnings: 0,
     browserTabsOpened: 0,
     projectConversationsRemoved: 0,
+    interactiveHtmlConversationsChecked: 0,
+    interactiveHtmlTabsOpened: 0,
   };
 
   try {
@@ -593,29 +598,66 @@ async function syncChatGptConversations(options) {
     summary.discovered = candidates.length;
 
     for (const candidate of candidates) {
-      if (isConversationCurrent(state, candidate)) {
+      const conversationIsCurrent = isConversationCurrent(state, candidate);
+      const interactiveHtmlCheckNeeded = needsInteractiveHtmlCheck(
+        state.conversations[candidate.id],
+        candidate,
+      );
+      if (conversationIsCurrent) {
         summary.skippedUnchanged += 1;
+      }
+      if (conversationIsCurrent && !interactiveHtmlCheckNeeded) {
         continue;
       }
 
-      console.log(`Exporting ${candidate.title || candidate.id}`);
-      const conversation = await client.fetchBackendJson(
-        `/backend-api/conversation/${encodeURIComponent(candidate.id)}`,
-      );
-      const result = await exportConversation(
-        client,
-        options.outputRoot,
-        state,
-        candidate,
-        conversation,
-      );
-      if (result.messagesWritten > 0) {
-        summary.exported += 1;
-      } else {
-        summary.skippedUnchanged += 1;
+      let conversation = null;
+      if (!conversationIsCurrent) {
+        console.log(`Exporting ${candidate.title || candidate.id}`);
+        conversation = await client.fetchBackendJson(
+          `/backend-api/conversation/${encodeURIComponent(candidate.id)}`,
+        );
+        const result = await exportConversation(
+          client,
+          options.outputRoot,
+          state,
+          candidate,
+          conversation,
+        );
+        if (result.messagesWritten > 0) {
+          summary.exported += 1;
+        } else {
+          summary.skippedUnchanged += 1;
+        }
+        summary.attachmentsDownloaded += result.attachmentsDownloaded;
+        summary.attachmentWarnings += result.attachmentWarnings;
       }
-      summary.attachmentsDownloaded += result.attachmentsDownloaded;
-      summary.attachmentWarnings += result.attachmentWarnings;
+
+      if (interactiveHtmlCheckNeeded) {
+        if (
+          !conversation &&
+          (await archiveMayContainInteractiveHtml(
+            options.outputRoot,
+            state.conversations[candidate.id],
+          ))
+        ) {
+          conversation = await client.fetchBackendJson(
+            `/backend-api/conversation/${encodeURIComponent(candidate.id)}`,
+          );
+        }
+
+        const record = state.conversations[candidate.id];
+        if (conversation && lastAssistantContainsInteractiveHtml(conversation)) {
+          openBraveTab(
+            options,
+            `https://chatgpt.com/c/${encodeURIComponent(candidate.id)}`,
+          );
+          record.interactiveHtmlOpenedAt = new Date().toISOString();
+          summary.interactiveHtmlTabsOpened += 1;
+          console.log(`Opened interactive HTML conversation: ${candidate.title}`);
+        }
+        record.interactiveHtmlCheckedUpdateTimeMs = candidate.updateTimeMs;
+        summary.interactiveHtmlConversationsChecked += 1;
+      }
       await saveState(options.statePath, state);
     }
 
@@ -883,6 +925,56 @@ function isConversationCurrent(state, candidate) {
     record?.folderName &&
       Array.isArray(record.seenMessageIds) &&
       record.updateTimeMs === candidate.updateTimeMs,
+  );
+}
+
+function needsInteractiveHtmlCheck(record, candidate) {
+  return Boolean(
+    !record?.interactiveHtmlOpenedAt &&
+      record?.interactiveHtmlCheckedUpdateTimeMs !== candidate.updateTimeMs,
+  );
+}
+
+async function archiveMayContainInteractiveHtml(outputRoot, record) {
+  if (!record?.folderName) return true;
+  const markdownPath = path.join(outputRoot, record.folderName, "conversation.md");
+  if (!existsSync(markdownPath)) return true;
+  const markdown = await readFile(markdownPath, "utf8");
+  return (
+    INTERACTIVE_HTML_LINK_PATTERN.test(markdown) ||
+    ARCHIVED_HTML_HINT_PATTERN.test(markdown)
+  );
+}
+
+function lastAssistantContainsInteractiveHtml(conversation) {
+  const mapping = conversation.mapping || {};
+  for (const messageId of visibleMessageIds(conversation).reverse()) {
+    const message = mapping[messageId]?.message;
+    if (
+      message?.author?.role !== "assistant" ||
+      shouldSkipMessage(message)
+    ) {
+      continue;
+    }
+    return contentContainsInteractiveHtml(message.content);
+  }
+  return false;
+}
+
+function contentContainsInteractiveHtml(value, fieldName = "") {
+  if (typeof value === "string") {
+    return (
+      INTERACTIVE_HTML_LINK_PATTERN.test(value) ||
+      ((fieldName === "content_type" || fieldName === "mime_type") &&
+        value.toLowerCase() === "text/html")
+    );
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => contentContainsInteractiveHtml(item));
+  }
+  if (!value || typeof value !== "object") return false;
+  return Object.entries(value).some(([key, item]) =>
+    contentContainsInteractiveHtml(item, key),
   );
 }
 
@@ -1421,6 +1513,8 @@ async function main() {
         `Attachment warnings: ${result.summary.attachmentWarnings}`,
         `Browser tabs opened: ${result.summary.browserTabsOpened}`,
         `Removed from browser queue: ${result.summary.projectConversationsRemoved}`,
+        `Interactive HTML conversations checked: ${result.summary.interactiveHtmlConversationsChecked}`,
+        `Interactive HTML tabs opened: ${result.summary.interactiveHtmlTabsOpened}`,
       ].join("\n"),
     );
   }
@@ -1445,6 +1539,7 @@ export {
   extractFileReferences,
   formatRunGateStatus,
   isConversationCurrent,
+  lastAssistantContainsInteractiveHtml,
   messageIdsToPersist,
   openAndRemoveProjectConversations,
   parseArgs,

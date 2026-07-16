@@ -13,7 +13,7 @@ The tables cover runnable entry points. The remaining Python and JavaScript file
 | `assistant_convos_to_notes.py` | Adds reminders for stalled Codex threads and unread or interrupted ChatGPT conversations to the notes inbox. |
 | `auth_telegram_notifs.py` | Interactively creates or refreshes the Telegram session used by the notification importer. |
 | `chatgpt_backend_fetch.mjs` | Fetches unread or interrupted ChatGPT conversation metadata for `assistant_convos_to_notes.py`. |
-| `chatgpt_convos_to_notes.mjs` | Incrementally exports active ChatGPT conversations and attachments to Markdown, then opens and removes chats queued in the configured ChatGPT project. |
+| `chatgpt_convos_to_notes.mjs` | Incrementally exports active ChatGPT conversations, opens final-response interactive HTML once, and drains the configured browser-handoff project. |
 | `discord_notifs_to_notes.py` | Saves unread Discord DMs and mentions as note entries and desktop notifications. |
 | `github_notifs_to_notes.py` | Saves unread GitHub notifications to the notes inbox, then marks them read. |
 | `linear_notifs_to_notes.py` | Contains a Linear notification importer, but is currently disabled by an immediate exit. |
