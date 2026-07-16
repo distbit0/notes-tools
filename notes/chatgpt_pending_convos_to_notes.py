@@ -18,7 +18,7 @@ from notes_utils import append_markdown_lines, configure_logger
 
 NOTES_FILE = Path.home() / "notes/inbox-index.md"
 LOG_PATH = Path(__file__).with_name("chatgpt-pending-convos-to-notes.log")
-STATE_PATH = Path.home() / ".local/state/assistant-convos-to-notes.json"
+STATE_PATH = Path.home() / ".local/state/chatgpt-pending-convos-to-notes.json"
 CHATGPT_FETCHER_PATH = Path(__file__).with_name("chatgpt_backend_fetch.mjs")
 BRAVE_COOKIES_PATH = (
     Path.home() / ".config/BraveSoftware/Brave-Browser/Default/Cookies"
