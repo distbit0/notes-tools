@@ -3,7 +3,7 @@
 ## 2026-07-16: ChatGPT browser actions run independently
 
 - A dedicated `--browser-actions` mode runs every two hours, independently of the 03:00/15:00 archive export and its run gate.
-- It opens a conversation in Brave when the latest visible assistant message contains generated sandbox HTML or direct `text/html`, recording successful opens in a separate browser-actions ledger so each matching conversation opens once. Existing archive history is migrated into that ledger.
+- It opens a conversation in Brave when the latest visible assistant message contains generated sandbox HTML or direct `text/html`, recording the assistant message ID in a separate browser-actions ledger. Each new matching assistant response opens once, including later visualizations in a conversation that opened previously.
 - It also drains the configured `open_in_browser` project: each chat opens as a new Brave tab and is then removed from the project. The project remains the retry ledger if opening or removal fails.
 - Current archive Markdown rules out clear non-matches locally; possible matches and new or changed conversations are verified from the live conversation response.
 

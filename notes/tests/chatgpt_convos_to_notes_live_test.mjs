@@ -6,7 +6,7 @@ import test from "node:test";
 
 import {
   ChatGptClient,
-  lastAssistantContainsInteractiveHtml,
+  lastAssistantInteractiveHtmlMessage,
   parseArgs,
   runBrowserActions,
   syncChatGptConversations,
@@ -60,23 +60,33 @@ test("live browser actions run through their independent ledger", async (t) => {
     return;
   }
 
-  const result = await runBrowserActions(
-    parseArgs([
-      "--browser-actions",
-      "--max-conversations",
-      "1",
-      "--request-delay-ms",
-      "4000",
-      "--jitter-ms",
-      "1000",
-    ]),
-  );
+  const options = parseArgs([
+    "--browser-actions",
+    "--max-conversations",
+    "1",
+    "--request-delay-ms",
+    "4000",
+    "--jitter-ms",
+    "1000",
+  ]);
+  const result = await runBrowserActions(options);
   assert.equal(result.status, "success");
   assert.equal(
     result.summary.browserQueueTabsOpened <=
       result.summary.projectConversationsRemoved,
     true,
   );
+
+  const browserState = JSON.parse(
+    await readFile(options.browserStatePath, "utf8"),
+  );
+  const interactiveRecord =
+    browserState.conversations[INTERACTIVE_HTML_CONVERSATION_ID];
+  assert.equal(
+    Object.keys(interactiveRecord.interactiveHtmlOpenedMessages).length >= 1,
+    true,
+  );
+  assert.equal("interactiveHtmlOpenedAt" in interactiveRecord, false);
 });
 
 test("live detector requires interactive HTML in the latest assistant message", async (t) => {
@@ -94,12 +104,14 @@ test("live detector requires interactive HTML in the latest assistant message", 
     `/backend-api/conversation/${EARLIER_HTML_ONLY_CONVERSATION_ID}`,
   );
 
-  assert.equal(
-    lastAssistantContainsInteractiveHtml(interactiveConversation),
-    true,
+  const interactiveMessage = lastAssistantInteractiveHtmlMessage(
+    interactiveConversation,
   );
+  assert.notEqual(interactiveMessage, null);
+  assert.equal(typeof interactiveMessage.id, "string");
+  assert.equal(interactiveMessage.createdAtMs > 0, true);
   assert.equal(
-    lastAssistantContainsInteractiveHtml(earlierHtmlOnlyConversation),
-    false,
+    lastAssistantInteractiveHtmlMessage(earlierHtmlOnlyConversation),
+    null,
   );
 });

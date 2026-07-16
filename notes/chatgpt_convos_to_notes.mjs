@@ -218,7 +218,7 @@ function defaultBrowserActionState(archiveState) {
         : {}),
     };
   }
-  return { version: 1, conversations };
+  return { version: 2, conversations };
 }
 
 async function loadState(statePath) {
@@ -251,7 +251,7 @@ async function loadBrowserActionState(browserStatePath, archiveState) {
 
   const state = JSON.parse(await readFile(browserStatePath, "utf8"));
   return {
-    version: 1,
+    version: 2,
     conversations:
       state.conversations && typeof state.conversations === "object"
         ? state.conversations
@@ -720,11 +720,20 @@ async function runBrowserActions(options) {
 
   for (const candidate of candidates) {
     const browserRecord = browserState.conversations[candidate.id] || {};
-    if (!needsInteractiveHtmlCheck(browserRecord, candidate)) continue;
+    const legacyOpenMigrationNeeded = Boolean(
+      browserRecord.interactiveHtmlOpenedAt,
+    );
+    if (
+      !legacyOpenMigrationNeeded &&
+      !needsInteractiveHtmlCheck(browserRecord, candidate)
+    ) {
+      continue;
+    }
 
     let conversation = null;
     const archiveIsCurrent = isConversationCurrent(archiveState, candidate);
     if (
+      legacyOpenMigrationNeeded ||
       !archiveIsCurrent ||
       (await archiveMayContainInteractiveHtml(
         options.outputRoot,
@@ -736,12 +745,22 @@ async function runBrowserActions(options) {
       );
     }
 
-    if (conversation && lastAssistantContainsInteractiveHtml(conversation)) {
+    if (legacyOpenMigrationNeeded) {
+      migrateLegacyInteractiveHtmlOpen(browserRecord, conversation);
+      console.log(`Migrated interactive HTML open: ${candidate.title}`);
+    }
+
+    const interactiveHtmlMessage = conversation
+      ? lastAssistantInteractiveHtmlMessage(conversation)
+      : null;
+    const openedMessages = browserRecord.interactiveHtmlOpenedMessages || {};
+    if (interactiveHtmlMessage && !openedMessages[interactiveHtmlMessage.id]) {
       openBraveTab(
         options,
         `https://chatgpt.com/c/${encodeURIComponent(candidate.id)}`,
       );
-      browserRecord.interactiveHtmlOpenedAt = new Date().toISOString();
+      openedMessages[interactiveHtmlMessage.id] = new Date().toISOString();
+      browserRecord.interactiveHtmlOpenedMessages = openedMessages;
       summary.interactiveHtmlTabsOpened += 1;
       openedThisRun.add(candidate.id);
       console.log(`Opened interactive HTML conversation: ${candidate.title}`);
@@ -1018,10 +1037,7 @@ function isConversationCurrent(state, candidate) {
 }
 
 function needsInteractiveHtmlCheck(record, candidate) {
-  return Boolean(
-    !record?.interactiveHtmlOpenedAt &&
-      record?.interactiveHtmlCheckedUpdateTimeMs !== candidate.updateTimeMs,
-  );
+  return record?.interactiveHtmlCheckedUpdateTimeMs !== candidate.updateTimeMs;
 }
 
 async function archiveMayContainInteractiveHtml(outputRoot, record) {
@@ -1035,19 +1051,63 @@ async function archiveMayContainInteractiveHtml(outputRoot, record) {
   );
 }
 
-function lastAssistantContainsInteractiveHtml(conversation) {
-  const mapping = conversation.mapping || {};
-  for (const messageId of visibleMessageIds(conversation).reverse()) {
-    const message = mapping[messageId]?.message;
-    if (
-      message?.author?.role !== "assistant" ||
-      shouldSkipMessage(message)
-    ) {
-      continue;
-    }
-    return contentContainsInteractiveHtml(message.content);
+function lastAssistantInteractiveHtmlMessage(conversation) {
+  const latestAssistantMessage = visibleAssistantMessages(conversation).at(-1);
+  if (
+    !latestAssistantMessage ||
+    !contentContainsInteractiveHtml(latestAssistantMessage.message.content)
+  ) {
+    return null;
   }
-  return false;
+  return {
+    id: latestAssistantMessage.id,
+    createdAtMs: timestampToMs(latestAssistantMessage.message.create_time),
+  };
+}
+
+function visibleAssistantMessages(conversation) {
+  const mapping = conversation.mapping || {};
+  return visibleMessageIds(conversation)
+    .map((messageId) => ({
+      id: mapping[messageId]?.message?.id || messageId,
+      message: mapping[messageId]?.message,
+    }))
+    .filter(
+      ({ message }) =>
+        message?.author?.role === "assistant" && !shouldSkipMessage(message),
+    );
+}
+
+function migrateLegacyInteractiveHtmlOpen(record, conversation) {
+  const openedAtMs = Date.parse(record.interactiveHtmlOpenedAt);
+  if (!Number.isFinite(openedAtMs)) {
+    throw new Error("Legacy interactive HTML open has an invalid timestamp.");
+  }
+
+  const previouslyOpenedMessage = visibleAssistantMessages(conversation)
+    .map(({ id, message }) => ({
+      id,
+      message,
+      createdAtMs: timestampToMs(message.create_time),
+    }))
+    .filter(
+      ({ message, createdAtMs }) =>
+        contentContainsInteractiveHtml(message.content) &&
+        createdAtMs > 0 &&
+        createdAtMs <= openedAtMs,
+    )
+    .sort((left, right) => right.createdAtMs - left.createdAtMs)[0];
+  if (!previouslyOpenedMessage) {
+    throw new Error(
+      "Could not identify the assistant message for a legacy interactive HTML open.",
+    );
+  }
+
+  record.interactiveHtmlOpenedMessages = {
+    ...(record.interactiveHtmlOpenedMessages || {}),
+    [previouslyOpenedMessage.id]: record.interactiveHtmlOpenedAt,
+  };
+  delete record.interactiveHtmlOpenedAt;
 }
 
 function contentContainsInteractiveHtml(value, fieldName = "") {
@@ -1638,7 +1698,7 @@ export {
   extractFileReferences,
   formatRunGateStatus,
   isConversationCurrent,
-  lastAssistantContainsInteractiveHtml,
+  lastAssistantInteractiveHtmlMessage,
   messageIdsToPersist,
   openAndRemoveProjectConversations,
   parseArgs,
