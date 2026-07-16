@@ -10,9 +10,9 @@ The tables cover runnable entry points. The remaining Python and JavaScript file
 
 | Script | Purpose |
 | --- | --- |
-| `assistant_convos_to_notes.py` | Adds reminders for unread or interrupted ChatGPT conversations to the notes inbox. |
+| `chatgpt_pending_convos_to_notes.py` | Adds reminders for unread or interrupted ChatGPT conversations to the notes inbox. |
 | `auth_telegram_notifs.py` | Interactively creates or refreshes the Telegram session used by the notification importer. |
-| `chatgpt_backend_fetch.mjs` | Fetches unread or interrupted ChatGPT conversation metadata for `assistant_convos_to_notes.py`. |
+| `chatgpt_backend_fetch.mjs` | Fetches unread or interrupted ChatGPT conversation metadata for `chatgpt_pending_convos_to_notes.py`. |
 | `chatgpt_convos_to_notes.mjs` | Incrementally exports active ChatGPT conversations; its independent `--browser-actions` mode opens each new final-response interactive HTML message once and drains the configured browser-handoff project. |
 | `discord_notifs_to_notes.py` | Saves unread Discord DMs and mentions as note entries and desktop notifications. |
 | `github_notifs_to_notes.py` | Saves unread GitHub notifications to the notes inbox, then marks them read. |

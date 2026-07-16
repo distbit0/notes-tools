@@ -5,7 +5,6 @@ import { pathToFileURL } from "node:url";
 const CHATGPT_BASE = "https://chatgpt.com";
 const BROWSER_USER_AGENT =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36";
-const CONVERSATION_SCAN_LIMIT = 100;
 const REQUEST_TIMEOUT_MS = 15000;
 const UNREAD_ASYNC_STATUS = 4;
 const UNREAD_FIELDS = ["is_unread", "unread", "has_unread", "isUnread", "hasUnread"];
@@ -165,8 +164,8 @@ async function fetchConversationList(headers) {
   let sawUnreadField = false;
   let total = 0;
 
-  while (items.length < CONVERSATION_SCAN_LIMIT) {
-    const limit = Math.min(pageLimit, CONVERSATION_SCAN_LIMIT - items.length);
+  while (true) {
+    const limit = pageLimit;
     const payload = await fetchJson(
       `${CHATGPT_BASE}/backend-api/conversations?offset=${offset}&limit=${limit}&order=updated`,
       { headers },
@@ -186,11 +185,6 @@ async function fetchConversationList(headers) {
   if (items.length > 0 && !sawUnreadField) {
     process.stderr.write(
       "WARNING: ChatGPT conversation list had no recognized unread field; unread ChatGPT conversations cannot be inferred from backend state\n",
-    );
-  }
-  if (total > items.length) {
-    process.stderr.write(
-      `WARNING: scanned ${items.length} of ${total} ChatGPT conversations; older conversations were not inspected\n`,
     );
   }
   return items;
