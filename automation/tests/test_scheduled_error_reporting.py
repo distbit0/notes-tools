@@ -37,6 +37,9 @@ def test_agents_md_is_the_shared_log_routing_authority() -> None:
     assert "scheduler log path" in agents_text
     assert "relevant writable skill or task feedback" in agents_text
     assert "final response when no writable feedback destination exists" in agents_text
+    assert "Substantive findings produced by the work" in agents_text
+    assert "discovered security weaknesses and exposures" in agents_text
+    assert "task output rather than execution failures" in agents_text
 
 
 def test_only_specialist_skill_packages_reference_shared_log_routing() -> None:
@@ -60,6 +63,16 @@ def test_only_specialist_skill_packages_reference_shared_log_routing() -> None:
                 f"{skill_name} duplicates AGENTS.md routing for "
                 f"{routing_reference}"
             )
+
+
+def test_security_audit_classifies_discovered_issues_as_report_findings() -> None:
+    skill_text = (SKILLS_DIR / "scheduled-security-audit/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "full report only" in skill_text
+    assert "security weaknesses, exposures, and recommended remediations" in skill_text
+    assert "report findings, not audit-execution failures" in skill_text
 
 
 def test_scheduler_prompts_defer_shared_log_routing_to_agents_md() -> None:
