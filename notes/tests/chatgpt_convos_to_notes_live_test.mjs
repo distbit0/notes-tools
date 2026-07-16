@@ -62,8 +62,6 @@ test("live browser actions run through their independent ledger", async (t) => {
 
   const options = parseArgs([
     "--browser-actions",
-    "--max-conversations",
-    "1",
     "--request-delay-ms",
     "4000",
     "--jitter-ms",
@@ -76,12 +74,15 @@ test("live browser actions run through their independent ledger", async (t) => {
       result.summary.projectConversationsRemoved,
     true,
   );
+  assert.equal(Number.isInteger(result.summary.apiRequests), true);
 
   const browserState = JSON.parse(
     await readFile(options.browserStatePath, "utf8"),
   );
   const interactiveRecord =
     browserState.conversations[INTERACTIVE_HTML_CONVERSATION_ID];
+  assert.equal(Number.isFinite(browserState.scanWatermarks.normal), true);
+  assert.equal(typeof browserState.scanWatermarks.projects, "object");
   assert.equal(
     Object.keys(interactiveRecord.interactiveHtmlOpenedMessages).length >= 1,
     true,

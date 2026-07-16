@@ -6,6 +6,7 @@
 - It opens a conversation in Brave when the latest visible assistant message contains generated sandbox HTML or direct `text/html`, recording the assistant message ID in a separate browser-actions ledger. Each new matching assistant response opens once, including later visualizations in a conversation that opened previously.
 - It also drains the configured `open_in_browser` project: each chat opens as a new Brave tab and is then removed from the project. The project remains the retry ledger if opening or removal fails.
 - Current archive Markdown rules out clear non-matches locally; possible matches and new or changed conversations are verified from the live conversation response.
+- Browser discovery reuses conversations embedded in the project sidebar and persists separate normal/project update watermarks. Watermarks advance only after an unrestricted successful run, so steady-state polling reads only the session, sidebar pages, and first normal-conversation page without risking gaps after partial or failed runs.
 
 ## 2026-07-14: ChatGPT conversation sync schedule
 

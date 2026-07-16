@@ -37,6 +37,7 @@ const DEFAULT_CUTOFF_ISO = "2026-05-27T00:00:00+07:00";
 const TIME_ZONE = "Asia/Ho_Chi_Minh";
 const MARKDOWN_FORMAT_VERSION = 3;
 const CONVERSATIONS_PAGE_SIZE = 28;
+const PROJECT_CONVERSATIONS_PAGE_SIZE = 20;
 const REQUEST_RETRY_LIMIT = 3;
 const REQUEST_TIMEOUT_MS = 60_000;
 const INTERACTIVE_HTML_LINK_PATTERN =
@@ -218,7 +219,11 @@ function defaultBrowserActionState(archiveState) {
         : {}),
     };
   }
-  return { version: 2, conversations };
+  return {
+    version: 3,
+    conversations,
+    scanWatermarks: { normal: null, projects: {} },
+  };
 }
 
 async function loadState(statePath) {
@@ -251,12 +256,34 @@ async function loadBrowserActionState(browserStatePath, archiveState) {
 
   const state = JSON.parse(await readFile(browserStatePath, "utf8"));
   return {
-    version: 2,
+    version: 3,
     conversations:
       state.conversations && typeof state.conversations === "object"
         ? state.conversations
         : {},
+    scanWatermarks: normalizeBrowserScanWatermarks(state.scanWatermarks),
   };
+}
+
+function normalizeBrowserScanWatermarks(scanWatermarks) {
+  if (scanWatermarks === undefined) return { normal: null, projects: {} };
+  if (!scanWatermarks || typeof scanWatermarks !== "object") {
+    throw new Error("Browser scan watermarks must be an object.");
+  }
+  const normal = scanWatermarks.normal ?? null;
+  if (normal !== null && !Number.isFinite(normal)) {
+    throw new Error("Normal-conversation scan watermark must be a timestamp.");
+  }
+  const projects = scanWatermarks.projects ?? {};
+  if (!projects || typeof projects !== "object") {
+    throw new Error("Project scan watermarks must be an object.");
+  }
+  for (const [projectId, updateTimeMs] of Object.entries(projects)) {
+    if (!Number.isFinite(updateTimeMs)) {
+      throw new Error(`Project scan watermark ${projectId} must be a timestamp.`);
+    }
+  }
+  return { normal, projects };
 }
 
 async function saveState(statePath, state) {
@@ -432,6 +459,7 @@ class ChatGptClient {
     this.deviceId = randomUUID();
     this.accessToken = "";
     this.accountId = "";
+    this.requestCount = 0;
   }
 
   async initialize() {
@@ -531,6 +559,7 @@ class ChatGptClient {
     let lastError = null;
     for (let attempt = 1; attempt <= REQUEST_RETRY_LIMIT; attempt += 1) {
       await this.throttler.wait();
+      this.requestCount += 1;
       try {
         const response = await fetch(url, {
           ...init,
@@ -646,14 +675,15 @@ async function syncChatGptConversations(options) {
     exported: 0,
     attachmentsDownloaded: 0,
     attachmentWarnings: 0,
+    apiRequests: 0,
   };
+  const client = new ChatGptClient(options);
 
   try {
-    const client = new ChatGptClient(options);
     await client.initialize();
 
     const projects = await fetchProjects(client);
-    const candidates = await collectCandidates(client, options, projects);
+    const { candidates } = await collectCandidates(client, options, projects);
     summary.discovered = candidates.length;
 
     for (const candidate of candidates) {
@@ -684,9 +714,11 @@ async function syncChatGptConversations(options) {
       await saveState(options.statePath, state);
     }
 
+    summary.apiRequests = client.requestCount;
     await finalizeRun(options.statePath, state, run, "success", summary);
     return { status: "success", summary };
   } catch (error) {
+    summary.apiRequests = client.requestCount;
     await finalizeRun(options.statePath, state, run, "failed", {
       ...summary,
       error: error.message,
@@ -709,12 +741,18 @@ async function runBrowserActions(options) {
     interactiveHtmlTabsOpened: 0,
     browserQueueTabsOpened: 0,
     projectConversationsRemoved: 0,
+    apiRequests: 0,
   };
   const client = new ChatGptClient(options);
   await client.initialize();
 
   const projects = await fetchProjects(client);
-  const candidates = await collectCandidates(client, options, projects);
+  const { candidates, scanWatermarks } = await collectCandidates(
+    client,
+    options,
+    projects,
+    browserState.scanWatermarks,
+  );
   summary.discovered = candidates.length;
   const openedThisRun = new Set();
 
@@ -779,24 +817,79 @@ async function runBrowserActions(options) {
   );
   summary.browserQueueTabsOpened = browserQueueResult.opened;
   summary.projectConversationsRemoved = browserQueueResult.removed;
+  summary.apiRequests = client.requestCount;
+  if (options.maxConversations === null) {
+    browserState.scanWatermarks = scanWatermarks;
+    await saveState(options.browserStatePath, browserState);
+  }
   return { status: "success", summary };
 }
 
-async function collectCandidates(client, options, projects) {
+async function collectCandidates(
+  client,
+  options,
+  projects,
+  previousScanWatermarks = null,
+) {
   const candidatesById = new Map();
-  await collectNormalCandidates(client, options, candidatesById);
+  const normalMinimumUpdateTimeMs = Math.max(
+    options.cutoffMs,
+    previousScanWatermarks?.normal ?? options.cutoffMs,
+  );
+  const latestNormalUpdateTimeMs = await collectNormalCandidates(
+    client,
+    options,
+    candidatesById,
+    normalMinimumUpdateTimeMs,
+  );
+  const scanWatermarks = {
+    normal:
+      latestNormalUpdateTimeMs > 0
+        ? Math.max(previousScanWatermarks?.normal ?? 0, latestNormalUpdateTimeMs)
+        : previousScanWatermarks?.normal ?? null,
+    projects: { ...(previousScanWatermarks?.projects || {}) },
+  };
 
   if (!hasReachedCandidateLimit(options, candidatesById)) {
-    await collectProjectCandidates(client, options, candidatesById, projects);
+    for (const project of projects) {
+      if (hasReachedCandidateLimit(options, candidatesById)) break;
+      const previousProjectWatermark =
+        previousScanWatermarks?.projects[project.id] ?? null;
+      const latestProjectUpdateTimeMs = await collectSingleProjectCandidates(
+        client,
+        options,
+        candidatesById,
+        project,
+        Math.max(
+          options.cutoffMs,
+          previousProjectWatermark ?? options.cutoffMs,
+        ),
+      );
+      if (latestProjectUpdateTimeMs > 0) {
+        scanWatermarks.projects[project.id] = Math.max(
+          previousProjectWatermark ?? 0,
+          latestProjectUpdateTimeMs,
+        );
+      }
+    }
   }
 
-  return [...candidatesById.values()]
-    .sort((left, right) => right.updateTimeMs - left.updateTimeMs)
-    .slice(0, options.maxConversations ?? undefined);
+  return {
+    candidates: [...candidatesById.values()]
+      .sort((left, right) => right.updateTimeMs - left.updateTimeMs)
+      .slice(0, options.maxConversations ?? undefined),
+    scanWatermarks,
+  };
 }
 
-async function collectNormalCandidates(client, options, candidatesById) {
+async function collectNormalCandidates(
+  client,
+  options,
+  candidatesById,
+  minimumUpdateTimeMs,
+) {
   let offset = 0;
+  let latestUpdateTimeMs = 0;
   while (!hasReachedCandidateLimit(options, candidatesById)) {
     const query = new URLSearchParams({
       offset: String(offset),
@@ -809,28 +902,18 @@ async function collectNormalCandidates(client, options, candidatesById) {
     );
     const items = Array.isArray(data.items) ? data.items : [];
     if (items.length === 0) break;
-
-    for (const item of items) {
-      const candidate = normalizeConversationListItem(item, null);
-      if (candidate.updateTimeMs >= options.cutoffMs) {
-        candidatesById.set(candidate.id, candidate);
-      }
-    }
-
-    const reachedOlderPage = items.every((item) => {
-      const candidate = normalizeConversationListItem(item, null);
-      return candidate.updateTimeMs < options.cutoffMs;
-    });
+    const page = addCandidatePage(
+      items,
+      null,
+      minimumUpdateTimeMs,
+      candidatesById,
+    );
+    latestUpdateTimeMs = Math.max(latestUpdateTimeMs, page.latestUpdateTimeMs);
+    const reachedOlderPage = page.oldestUpdateTimeMs < minimumUpdateTimeMs;
     if (reachedOlderPage || items.length < CONVERSATIONS_PAGE_SIZE) break;
     offset += items.length;
   }
-}
-
-async function collectProjectCandidates(client, options, candidatesById, projects) {
-  for (const project of projects) {
-    if (hasReachedCandidateLimit(options, candidatesById)) break;
-    await collectSingleProjectCandidates(client, options, candidatesById, project);
-  }
+  return latestUpdateTimeMs;
 }
 
 async function fetchProjects(client) {
@@ -839,7 +922,7 @@ async function fetchProjects(client) {
   do {
     const query = new URLSearchParams({
       owned_only: "true",
-      conversations_per_gizmo: "0",
+      conversations_per_gizmo: String(PROJECT_CONVERSATIONS_PAGE_SIZE),
     });
     if (cursor) query.set("cursor", cursor);
     const data = await client.fetchBackendJson(
@@ -849,9 +932,14 @@ async function fetchProjects(client) {
     for (const item of items) {
       const gizmo = item.gizmo?.gizmo || item.gizmo;
       if (!gizmo?.id) continue;
+      if (!item.conversations || !Array.isArray(item.conversations.items)) {
+        throw new Error(`ChatGPT project ${gizmo.id} is missing conversations.`);
+      }
       projects.push({
         id: gizmo.id,
         name: gizmo.display?.name || "Untitled Project",
+        embeddedConversations: item.conversations.items,
+        hasMoreConversations: Boolean(item.conversations.cursor),
       });
     }
     cursor = data.cursor || null;
@@ -859,7 +947,29 @@ async function fetchProjects(client) {
   return projects;
 }
 
-async function collectSingleProjectCandidates(client, options, candidatesById, project) {
+async function collectSingleProjectCandidates(
+  client,
+  options,
+  candidatesById,
+  project,
+  minimumUpdateTimeMs,
+) {
+  const embeddedPage = addCandidatePage(
+    project.embeddedConversations,
+    project,
+    minimumUpdateTimeMs,
+    candidatesById,
+  );
+  let latestUpdateTimeMs = embeddedPage.latestUpdateTimeMs;
+  if (
+    !project.hasMoreConversations ||
+    (embeddedPage.itemCount > 0 &&
+      embeddedPage.oldestUpdateTimeMs < minimumUpdateTimeMs) ||
+    hasReachedCandidateLimit(options, candidatesById)
+  ) {
+    return latestUpdateTimeMs;
+  }
+
   let cursor = "0";
   while (cursor && !hasReachedCandidateLimit(options, candidatesById)) {
     const data = await client.fetchBackendJson(
@@ -869,24 +979,52 @@ async function collectSingleProjectCandidates(client, options, candidatesById, p
     );
     const items = Array.isArray(data.items) ? data.items : [];
     if (items.length === 0) break;
-
-    for (const item of items) {
-      const candidate = normalizeConversationListItem(item, project);
-      if (candidate.updateTimeMs >= options.cutoffMs) {
-        candidatesById.set(candidate.id, candidate);
-      }
-    }
-
-    const reachedOlderPage = items.every((item) => {
-      const candidate = normalizeConversationListItem(item, project);
-      return candidate.updateTimeMs < options.cutoffMs;
-    });
+    const page = addCandidatePage(
+      items,
+      project,
+      minimumUpdateTimeMs,
+      candidatesById,
+    );
+    latestUpdateTimeMs = Math.max(latestUpdateTimeMs, page.latestUpdateTimeMs);
+    const reachedOlderPage = page.oldestUpdateTimeMs < minimumUpdateTimeMs;
     if (reachedOlderPage) break;
     cursor = data.cursor || null;
   }
+  return latestUpdateTimeMs;
+}
+
+function addCandidatePage(
+  items,
+  project,
+  minimumUpdateTimeMs,
+  candidatesById,
+) {
+  const candidates = items.map((item) =>
+    normalizeConversationListItem(item, project),
+  );
+  for (let index = 1; index < candidates.length; index += 1) {
+    if (candidates[index - 1].updateTimeMs < candidates[index].updateTimeMs) {
+      throw new Error("ChatGPT conversation page is not ordered by update time.");
+    }
+  }
+  for (const candidate of candidates) {
+    if (candidate.updateTimeMs >= minimumUpdateTimeMs) {
+      candidatesById.set(candidate.id, candidate);
+    }
+  }
+  return {
+    itemCount: candidates.length,
+    latestUpdateTimeMs: candidates[0]?.updateTimeMs ?? 0,
+    oldestUpdateTimeMs: candidates.at(-1)?.updateTimeMs ?? 0,
+  };
 }
 
 async function fetchAllProjectConversations(client, project) {
+  if (!project.hasMoreConversations) return project.embeddedConversations;
+  return fetchProjectConversationsFromApi(client, project);
+}
+
+async function fetchProjectConversationsFromApi(client, project) {
   const conversations = [];
   let cursor = "0";
   while (cursor) {
@@ -971,7 +1109,7 @@ async function openAndRemoveProjectConversations(
 
   const originalConversationIds = new Set(conversations.map(({ id }) => id));
   const remainingConversationIds = new Set(
-    (await fetchAllProjectConversations(client, browserProject)).map(
+    (await fetchProjectConversationsFromApi(client, browserProject)).map(
       (conversation) => conversation.id || conversation.conversation_id,
     ),
   );
@@ -1663,6 +1801,7 @@ async function main() {
           `Interactive HTML tabs opened: ${result.summary.interactiveHtmlTabsOpened}`,
           `Browser queue tabs opened: ${result.summary.browserQueueTabsOpened}`,
           `Removed from browser queue: ${result.summary.projectConversationsRemoved}`,
+          `API requests: ${result.summary.apiRequests}`,
         ].join("\n"),
       );
       return;
@@ -1674,6 +1813,7 @@ async function main() {
         `Skipped unchanged: ${result.summary.skippedUnchanged}`,
         `Attachments downloaded: ${result.summary.attachmentsDownloaded}`,
         `Attachment warnings: ${result.summary.attachmentWarnings}`,
+        `API requests: ${result.summary.apiRequests}`,
       ].join("\n"),
     );
   }
