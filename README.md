@@ -10,7 +10,7 @@ The tables cover runnable entry points. The remaining Python and JavaScript file
 
 | Script | Purpose |
 | --- | --- |
-| `assistant_convos_to_notes.py` | Adds reminders for stalled Codex threads and unread or interrupted ChatGPT conversations to the notes inbox. |
+| `assistant_convos_to_notes.py` | Adds reminders for unread or interrupted ChatGPT conversations to the notes inbox. |
 | `auth_telegram_notifs.py` | Interactively creates or refreshes the Telegram session used by the notification importer. |
 | `chatgpt_backend_fetch.mjs` | Fetches unread or interrupted ChatGPT conversation metadata for `assistant_convos_to_notes.py`. |
 | `chatgpt_convos_to_notes.mjs` | Incrementally exports active ChatGPT conversations; its independent `--browser-actions` mode opens each new final-response interactive HTML message once and drains the configured browser-handoff project. |
@@ -28,7 +28,6 @@ The tables cover runnable entry points. The remaining Python and JavaScript file
 
 | Script | Purpose |
 | --- | --- |
-| `run_interactive_codex_session.sh` | Starts or resumes an interactive scheduled Codex session and records its session ID. |
 | `run_scheduled_codex_skill.sh` | Runs due Codex skills, message importers, and reply-drafting jobs with locking and logs. |
 | `strip_context_frontmatter_fields.py` | Removes publishing-only `gist_url` and `live` fields from context-note frontmatter. |
 

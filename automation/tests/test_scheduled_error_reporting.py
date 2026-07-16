@@ -77,21 +77,13 @@ def test_security_audit_classifies_discovered_issues_as_report_findings() -> Non
 
 def test_scheduler_prompts_defer_shared_log_routing_to_agents_md() -> None:
     scheduler_text = SCHEDULER.read_text(encoding="utf-8")
-    prompt_sections = (
-        scheduler_text[
-            scheduler_text.index("build_c_bang_prompt()"):
-            scheduler_text.index("\nrecord_c_bang_session_id()")
-        ],
-        scheduler_text[
-            scheduler_text.index("run_and_record_codex_job()"):
-            scheduler_text.index("\nvalidate_job_config()")
-        ],
-    )
+    prompt_section = scheduler_text[
+        scheduler_text.index("run_and_record_codex_job()"):
+        scheduler_text.index("\nvalidate_job_config()")
+    ].lower()
 
-    for prompt_section in prompt_sections:
-        prompt_section = prompt_section.lower()
-        for routing_reference in ROUTING_REFERENCES:
-            assert routing_reference not in prompt_section
+    for routing_reference in ROUTING_REFERENCES:
+        assert routing_reference not in prompt_section
 
 
 def test_logged_error_fixer_requires_context_complete_judgment_based_reports() -> None:
@@ -148,7 +140,7 @@ def test_runner_fallback_uses_only_redacted_status_metadata() -> None:
     scheduler_text = SCHEDULER.read_text(encoding="utf-8")
     fallback = scheduler_text[
         scheduler_text.index("log_scheduled_job_failure()"):
-        scheduler_text.index("\nerror_log_has_new_records()")
+        scheduler_text.index("\nmessage_pull_scripts()")
     ]
 
     assert "exit_status=${status}" in fallback

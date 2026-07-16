@@ -44,6 +44,6 @@
 ## Scheduled Codex execution boundary
 
 - The shared wrapper always runs scheduled skills from `~/notes`; each skill owns its own file selection and mutation policy, while systemd owns wakeups and the wrapper owns cadence.
-- Non-interactive jobs use `exec` sessions so conversation-processing jobs cannot ingest their own automation threads. Interactive jobs keep the Codex TUI as the foreground terminal process.
+- Scheduled jobs use `exec` sessions so conversation-processing jobs cannot ingest their own automation threads; `cli` remains available when a job must appear in normal Codex thread lists.
 - Importers record changed message-note paths before reply drafting. Drafting runs only when the unified message pull actually changed message notes.
-- Codex state-schema and Herdr lifecycle failures remain explicit; the scheduler must not silently switch execution paths.
+- Codex state-schema failures remain explicit; the scheduler must not silently switch execution paths.

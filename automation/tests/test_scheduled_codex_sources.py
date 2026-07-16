@@ -133,38 +133,6 @@ def test_infolio_selection_is_passed_to_codex_after_cadence_check() -> None:
     assert "Selection JSON:" in scheduler_text
 
 
-def test_interactive_ci_prompt_uses_herdr_terminal_input() -> None:
-    scheduler_text = SCHEDULER.read_text(encoding="utf-8")
-    interactive_job = scheduler_text[
-        scheduler_text.index("run_interactive_codex_job()"):
-        scheduler_text.index("\nrun_and_record_codex_job()")
-    ]
-
-    assert (
-        'readonly HERDR_CODEX_INPUT_DELAY_MS="${HERDR_CODEX_INPUT_DELAY_MS:-3000}"'
-        in scheduler_text
-    )
-    assert (
-        'readonly HERDR_BIN="${HERDR_BIN:-${HOME}/.local/bin/herdr}"'
-        in scheduler_text
-    )
-    assert (
-        'start_herdr_codex_agent "$agent_name" "$job_name" "$run_id" "$session_id"'
-        in interactive_job
-    )
-    assert (
-        'send_herdr_codex_input "$agent_name" "$pane_id" "$prompt" '
-        '"$HERDR_CODEX_INPUT_DELAY_MS"'
-    ) in interactive_job
-    assert '"$HERDR_BIN" agent send "$agent_name" "$prompt"' in scheduler_text
-    assert '"$HERDR_BIN" pane send-keys "$pane_id" Enter' in scheduler_text
-    assert '"$INTERACTIVE_CODEX_SESSION_RUNNER" \\' in scheduler_text
-    assert '"${session_id:-"-"}"' in scheduler_text
-    assert '"$prompt_file"' not in interactive_job
-    assert "write_terminal_launch_request" not in scheduler_text
-    assert "VSCODE_BIN" not in scheduler_text
-
-
 def test_goal_advancement_uses_a_profile_instead_of_full_access() -> None:
     scheduler_text = SCHEDULER.read_text(encoding="utf-8")
     run_job = scheduler_text[
@@ -188,10 +156,6 @@ def test_goal_advancement_uses_a_profile_instead_of_full_access() -> None:
 
 def test_scheduler_holds_notes_auto_commit_lock_for_entire_run() -> None:
     scheduler_text = SCHEDULER.read_text(encoding="utf-8")
-    c_bang_prompt = scheduler_text[
-        scheduler_text.index("build_c_bang_prompt()"):
-        scheduler_text.index("\nrecord_c_bang_session_id()")
-    ]
     run_job = scheduler_text[
         scheduler_text.index("run_and_record_codex_job()"):
         scheduler_text.index("\nvalidate_job_config()")
@@ -204,7 +168,6 @@ def test_scheduler_holds_notes_auto_commit_lock_for_entire_run() -> None:
         "The scheduler parent already holds $NOTES_AUTO_COMMIT_LOCK for this job. "
         "Do not acquire that lock again"
     )
-    assert lock_instruction in c_bang_prompt
     assert lock_instruction in run_job
     assert top_level.index('exec 8>"${STATE_DIR}/run_scheduled_codex_skill.lock"') < (
         top_level.index("flock 8")
@@ -339,19 +302,6 @@ exec /usr/bin/tee "$@"
     assert "scheduled Codex job: scheduled-goal-advancement status=0" in first_stdout
     assert "scheduled Codex job: scheduled-goal-advancement status=0" in second_stdout
     assert tee_started_path.read_text(encoding="utf-8").count("\n") == 2
-
-
-def test_no_claimable_ci_tasks_are_handled_without_errexit() -> None:
-    scheduler_text = SCHEDULER.read_text(encoding="utf-8")
-    ci_scheduler = scheduler_text[
-        scheduler_text.index("scheduled_ci_bang_jobs()"):
-        scheduler_text.index("\nscheduled_message_reply_jobs()")
-    ]
-
-    assert "if claimable_ci_bang_tasks; then" in ci_scheduler
-    assert "claimable_status=0\n  else\n    claimable_status=$?" in ci_scheduler
-    assert "if (( claimable_status == 1 )); then" in ci_scheduler
-    assert "return 0" in ci_scheduler
 
 
 def test_override_runs_a_scheduled_job_again_after_its_catchup_was_claimed(

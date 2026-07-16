@@ -4,12 +4,9 @@ set -euo pipefail
 readonly CODEX_BIN="${CODEX_BIN:-${HOME}/.bun/bin/codex}"
 readonly CODEX_MODEL="$("${HOME}/dev/misc/gpt-model.sh")"
 readonly CODEX_HOME_DIR="${CODEX_HOME:-${HOME}/.codex}"
-readonly HERDR_BIN="${HERDR_BIN:-${HOME}/.local/bin/herdr}"
 readonly NOTES_DIR="${HOME}/notes"
 readonly TOOLS_DIR="${HOME}/dev/notes-tools"
 readonly LOG_DIR="${SCHEDULED_CODEX_LOG_DIR:-${TOOLS_DIR}/automation/scheduled-codex-logs}"
-readonly INTERACTIVE_CODEX_SESSION_RUNNER="${TOOLS_DIR}/automation/run_interactive_codex_session.sh"
-readonly HERDR_LAUNCHER="${HERDR_LAUNCHER:-${HOME}/dev/misc/desktop/herdr-launch.sh}"
 readonly LOG_MAX_BYTES="${SCHEDULED_CODEX_LOG_MAX_BYTES:-200000}"
 readonly STATE_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/scheduled-codex"
 readonly MESSAGE_REPLY_CHANGED_NOTES_FILE="${STATE_DIR}/message-reply-changed-notes.txt"
@@ -17,7 +14,6 @@ readonly DESKTOP_ERROR_LOG="${DESKTOP_ERROR_LOG_PATH:-${HOME}/dev/error_log.txt}
 readonly DESKTOP_ERROR_LOGGER="${DESKTOP_ERROR_LOGGER:-${HOME}/dev/misc/automation/log_desktop_error.sh}"
 readonly NOTES_AUTO_COMMIT_LOCK="${SCHEDULED_CODEX_NOTES_AUTO_COMMIT_LOCK:-${NOTES_DIR}/.git/git_auto_commit.lock}"
 readonly CATCHUP_GRACE_SECONDS=600
-readonly HERDR_CODEX_INPUT_DELAY_MS="${HERDR_CODEX_INPUT_DELAY_MS:-3000}"
 
 scheduled_codex_jobs() {
   scheduled_codex_job "scheduled-goal-advancement" "scheduled-goal-advancement" "exec" "07:00" "" "daily-goal-advancement"
@@ -30,42 +26,6 @@ scheduled_codex_jobs() {
   scheduled_codex_job_every_n_days "scheduled-distill-assistant-chats" "scheduled-distill-assistant-chats" "exec" "16:00" 2 0
   scheduled_codex_job_every_n_days "scheduled-infolio-relevance" "scheduled-infolio-relevance" "exec" "21:00" 3 1 "" prepare_infolio_relevance_prompt
   scheduled_error_log_job "scheduled-fix-logged-errors" "scheduled-fix-logged-errors" "exec" "06:00"
-}
-
-scheduled_c_bang_jobs() {
-  scheduled_codex_job_count=$((scheduled_codex_job_count + 1))
-  run_prepared_c_bang_job
-}
-
-scheduled_ci_bang_jobs() {
-  local claimable_status
-  local error_count_before
-
-  scheduled_codex_job_count=$((scheduled_codex_job_count + 1))
-  error_count_before="$(desktop_error_count scheduled-ci-bang-interactive)"
-  if claimable_ci_bang_tasks; then
-    claimable_status=0
-  else
-    claimable_status=$?
-  fi
-
-  if (( claimable_status == 1 )); then
-    log_skipped_job "scheduled-ci-bang-interactive" "no claimable ci! tasks found"
-    return 0
-  fi
-  if (( claimable_status != 0 )); then
-    log_scheduled_job_failure \
-      "scheduled-ci-bang-interactive" \
-      "scheduled-ci-bang-interactive" \
-      "$claimable_status" \
-      "$error_count_before" || true
-    if (( overall_status == 0 )); then
-      overall_status="$claimable_status"
-    fi
-    return 0
-  fi
-
-  run_and_record_codex_job "scheduled-ci-bang-interactive" "scheduled-ci-bang-interactive" "interactive" ""
 }
 
 scheduled_message_reply_jobs() {
@@ -89,7 +49,7 @@ scheduled_message_reply_jobs() {
 }
 
 usage() {
-  echo "Usage: $0 [--override] [all|c-bang|ci-bang|message-replies|scheduled-jobs SLOT]" >&2
+  echo "Usage: $0 [--override] [all|message-replies|scheduled-jobs SLOT]" >&2
   echo "Edit scheduled_codex_jobs in this script to choose scheduled skills." >&2
 }
 
@@ -109,12 +69,8 @@ valid_slot() {
   [[ "$1" =~ ^([01][0-9]|2[0-3])[0-5][0-9]$ ]]
 }
 
-valid_thread_id() {
-  [[ "$1" =~ ^[0-9a-fA-F-]+$ ]]
-}
-
 valid_session_source() {
-  [[ "$1" == "cli" || "$1" == "exec" || "$1" == "interactive" ]]
+  [[ "$1" == "cli" || "$1" == "exec" ]]
 }
 
 cadence_phase_for_slot() {
@@ -338,288 +294,6 @@ job_log=${job_log}"
     "$details"
 }
 
-error_log_has_new_records() {
-  [[ -s "$DESKTOP_ERROR_LOG" ]]
-}
-
-claimable_ci_bang_tasks() {
-  local count
-  local status
-
-  if count="$(
-    uv run --env-file .env python \
-      .agents/skills/scheduled-ci-bang-interactive/scripts/prepare_interactive_session.py \
-      --count \
-      --notes-dir "$NOTES_DIR"
-  )"; then
-    status=0
-  else
-    status=$?
-  fi
-
-  if (( status != 0 )); then
-    return "$status"
-  fi
-  if ! valid_nonnegative_integer "$count"; then
-    echo "Invalid ci! claimable task count: $count" >&2
-    return 2
-  fi
-
-  (( count > 0 ))
-}
-
-build_c_bang_prompt() {
-  local prepare_file="$1"
-  local action
-  local run_id
-
-  action="$(jq -r '.action' "$prepare_file")"
-  run_id="$(jq -r '.run_id' "$prepare_file")"
-
-  jq -c 'del(.prompt)' "$prepare_file" >/dev/null
-
-  cat <<PROMPT
-Use \$scheduled-c-bang-executor for this unattended scheduled Codex job.
-
-Scheduled job: scheduled-c-bang-executor
-Working directory: $NOTES_DIR
-Action: $action
-Run ID: $run_id
-
-The scheduler has already selected the task run below. Do not run the claim script again. Use the supplied run_id and task_id values when writing the completion report.
-
-Claim data:
-$(cat "$prepare_file")
-
-Rules:
-- Do not ask follow-up questions.
-- If blocked, fail clearly instead of using a silent fallback.
-- The scheduler parent already holds $NOTES_AUTO_COMMIT_LOCK for this job. Do not acquire that lock again; make any required scoped Git commit directly.
-- Keep edits scoped to what the claimed tasks require.
-- After every claimed task is complete, blocked, or intentionally reduced to a drafted next step, run complete_c_bang_tasks.py with one report per task_id.
-- Summarize any files changed and anything surprising in the final response.
-PROMPT
-}
-
-record_c_bang_session_id() {
-  local run_id="$1"
-  local session_id="$2"
-
-  (
-    cd "$NOTES_DIR"
-    uv run --env-file .env python \
-      .agents/skills/scheduled-c-bang-executor/scripts/claim_c_bang_tasks.py \
-      --notes-dir "$NOTES_DIR" \
-      --record-session \
-      --run-id "$run_id" \
-      --session-id "$session_id"
-  )
-}
-
-release_c_bang_run() {
-  local run_id="$1"
-
-  (
-    cd "$NOTES_DIR"
-    uv run --env-file .env python \
-      .agents/skills/scheduled-c-bang-executor/scripts/claim_c_bang_tasks.py \
-      --notes-dir "$NOTES_DIR" \
-      --release-run \
-      --run-id "$run_id"
-  )
-}
-
-run_prepared_c_bang_job() {
-  local job_name="scheduled-c-bang-executor"
-  local log_file="${LOG_DIR}/${job_name}.log"
-  local lock_file="${STATE_DIR}/${job_name}.lock"
-  local prepare_file
-  local prepare_error_file
-  local prompt_file
-  local run_event_file
-  local run_output_file
-  local final_message_file
-  local source_update_file
-  local action
-  local run_id
-  local session_id
-  local prompt
-  local codex_pid
-  local status
-  local thread_id=""
-  local session_recorded=0
-  local source_update_status=0
-  local error_count_before
-
-  mkdir -p "$LOG_DIR" "$STATE_DIR"
-
-  exec 9>"$lock_file"
-  if ! flock -n 9; then
-    log_skipped_job "$job_name" "already running"
-    return 0
-  fi
-
-  error_count_before="$(desktop_error_count "$job_name")"
-
-  prepare_file="$(mktemp "${STATE_DIR}/${job_name}.prepare.XXXXXX")"
-  prepare_error_file="$(mktemp "${STATE_DIR}/${job_name}.prepare-stderr.XXXXXX")"
-  prompt_file="$(mktemp "${STATE_DIR}/${job_name}.prompt.XXXXXX")"
-  run_event_file="$(mktemp "${STATE_DIR}/${job_name}.events.XXXXXX")"
-  run_output_file="$(mktemp "${STATE_DIR}/${job_name}.stderr.XXXXXX")"
-  final_message_file="$(mktemp "${STATE_DIR}/${job_name}.final.XXXXXX")"
-  source_update_file="$(mktemp "${STATE_DIR}/${job_name}.source.XXXXXX")"
-
-  set +e
-  (
-    cd "$NOTES_DIR"
-    uv run --env-file .env python \
-      .agents/skills/scheduled-c-bang-executor/scripts/claim_c_bang_tasks.py \
-      --notes-dir "$NOTES_DIR" \
-      --prepare
-  ) > "$prepare_file" 2> "$prepare_error_file"
-  status=$?
-  set -e
-
-  if (( status == 0 )); then
-    action="$(jq -r '.action // empty' "$prepare_file" 2> "$source_update_file")" || status=1
-  fi
-
-  if (( status == 0 )) && [[ "$action" == "skip" ]]; then
-    {
-      printf '\n[%s] skipped scheduled Codex job: %s; no claimable or resumable c! tasks.\n' \
-        "$(date --iso-8601=seconds)" "$job_name"
-      jq -c '.' "$prepare_file"
-      printf '\n'
-    } | append_job_log "$log_file"
-    rm -f "$prepare_file" "$prepare_error_file" "$prompt_file" "$run_event_file" "$run_output_file" "$final_message_file" "$source_update_file"
-    return 0
-  fi
-
-  if (( status == 0 )); then
-    run_id="$(jq -r '.run_id // empty' "$prepare_file")"
-    session_id="$(jq -r '.session_id // empty' "$prepare_file")"
-    prompt="$(build_c_bang_prompt "$prepare_file")"
-    printf '%s\n' "$prompt" > "$prompt_file"
-
-    record_started_session() {
-      local discovered_thread_id
-      discovered_thread_id="$(read_started_thread_id "$run_event_file" 2>/dev/null || true)"
-      if [[ -n "$run_id" && -n "$discovered_thread_id" ]]; then
-        record_c_bang_session_id "$run_id" "$discovered_thread_id" >/dev/null 2>> "$source_update_file" || true
-      fi
-    }
-    trap 'record_started_session; exit 143' TERM INT HUP
-
-    if [[ "$action" == "resume" ]]; then
-      "$CODEX_BIN" --model "$CODEX_MODEL" --dangerously-bypass-approvals-and-sandbox -C "$NOTES_DIR" exec resume \
-        --json \
-        --output-last-message "$final_message_file" \
-        "$session_id" \
-        - < "$prompt_file" > "$run_event_file" 2> "$run_output_file" &
-    else
-      "$CODEX_BIN" --model "$CODEX_MODEL" --dangerously-bypass-approvals-and-sandbox exec \
-        -C "$NOTES_DIR" \
-        --color never \
-        --json \
-        --output-last-message "$final_message_file" \
-        - < "$prompt_file" > "$run_event_file" 2> "$run_output_file" &
-    fi
-    codex_pid=$!
-
-    set +e
-    while kill -0 "$codex_pid" 2>/dev/null; do
-      if [[ "$action" == "start" && -z "$thread_id" ]]; then
-        thread_id="$(read_started_thread_id "$run_event_file" 2>/dev/null || true)"
-        if [[ -n "$thread_id" ]]; then
-          if record_c_bang_session_id "$run_id" "$thread_id" >> "$source_update_file" 2>&1; then
-            session_recorded=1
-          else
-            source_update_status=1
-          fi
-        fi
-      fi
-      sleep 1
-    done
-    wait "$codex_pid"
-    status=$?
-    set -e
-    trap - TERM INT HUP
-
-    if [[ "$action" == "start" ]]; then
-      if ! thread_id="$(read_started_thread_id "$run_event_file" 2> "$source_update_file")"; then
-        source_update_status=$?
-      elif [[ -z "$thread_id" ]]; then
-        printf 'Could not record c! Codex session for run %s: codex exec did not emit a session id.\n' \
-          "$run_id" > "$source_update_file"
-        if (( status != 0 )); then
-          release_c_bang_run "$run_id" >> "$source_update_file" 2>&1 || true
-        fi
-        source_update_status=1
-      elif (( session_recorded == 1 )); then
-        :
-      else
-        record_c_bang_session_id "$run_id" "$thread_id" >> "$source_update_file" 2>&1 || source_update_status=$?
-      fi
-    else
-      thread_id="$session_id"
-    fi
-
-    if [[ -n "$thread_id" ]]; then
-      mark_thread_as_cli "$thread_id" >> "$source_update_file" 2>&1 || source_update_status=$?
-    fi
-
-    if (( source_update_status != 0 && status == 0 )); then
-      status="$source_update_status"
-    fi
-  fi
-
-  {
-    printf '\n[%s] scheduled Codex job: %s status=%s\n' \
-      "$(date --iso-8601=seconds)" "$job_name" "$status"
-    printf 'requested session source: cli\n'
-    if [[ -n "${action:-}" ]]; then
-      printf 'action: %s\n' "$action"
-    fi
-    if [[ -n "${run_id:-}" ]]; then
-      printf 'run id: %s\n' "$run_id"
-    fi
-    if [[ -n "${thread_id:-}" ]]; then
-      printf 'thread id: %s\n' "$thread_id"
-    fi
-    if [[ -s "$prepare_error_file" ]]; then
-      printf 'prepare stderr:\n'
-      cat "$prepare_error_file"
-      printf '\n'
-    fi
-    if [[ -s "$source_update_file" ]]; then
-      printf 'session source update:\n'
-      cat "$source_update_file"
-      printf '\n'
-    fi
-    if [[ -s "$run_output_file" ]]; then
-      printf 'Codex stderr:\n'
-      cat "$run_output_file"
-      printf '\n'
-    fi
-    printf 'final response:\n'
-    if [[ -s "$final_message_file" ]]; then
-      cat "$final_message_file"
-      printf '\n'
-    else
-      printf '(no final response captured)\n'
-    fi
-  } | append_job_log "$log_file"
-
-  if (( status != 0 )); then
-    log_scheduled_job_failure \
-      "$job_name" "$job_name" "$status" "$error_count_before" "${thread_id:-}" || true
-  fi
-
-  rm -f "$prepare_file" "$prepare_error_file" "$prompt_file" "$run_event_file" "$run_output_file" "$final_message_file" "$source_update_file"
-
-  return "$status"
-}
-
 message_pull_scripts() {
   printf '%s\t%s\n' "github" "notes/github_notifs_to_notes.py"
   printf '%s\t%s\n' "linear" "notes/linear_notifs_to_notes.py"
@@ -824,208 +498,6 @@ mark_thread_as_cli() {
   return 1
 }
 
-codex_terminal_input() {
-  local prompt="$1"
-  printf '%s\n' "${prompt//$'\n'/ }"
-}
-
-milliseconds_to_sleep_seconds() {
-  local delay_ms="$1"
-
-  if ! valid_nonnegative_integer "$delay_ms"; then
-    echo "Invalid Herdr Codex input delay: $delay_ms" >&2
-    return 2
-  fi
-
-  printf '%s.%03d\n' "$((delay_ms / 1000))" "$((delay_ms % 1000))"
-}
-
-herdr_codex_agent_name() {
-  local run_id="$1"
-  printf 'codex-ci-%s\n' "${run_id:0:8}"
-}
-
-start_herdr_codex_agent() {
-  local agent_name="$1"
-  local job_name="$2"
-  local run_id="$3"
-  local session_id="$4"
-
-  "$HERDR_BIN" agent start "$agent_name" --cwd "$NOTES_DIR" --focus -- \
-    "$INTERACTIVE_CODEX_SESSION_RUNNER" \
-    "$job_name" \
-    "$run_id" \
-    "${session_id:-"-"}"
-}
-
-herdr_agent_pane_id() {
-  local agent_name="$1"
-
-  "$HERDR_BIN" agent get "$agent_name" | jq -r '.result.agent.pane_id // empty'
-}
-
-send_herdr_codex_input() {
-  local agent_name="$1"
-  local pane_id="$2"
-  local prompt="$3"
-  local delay_ms="$4"
-  local sleep_seconds
-
-  sleep_seconds="$(milliseconds_to_sleep_seconds "$delay_ms")"
-  sleep "$sleep_seconds"
-  "$HERDR_BIN" agent send "$agent_name" "$prompt"
-  "$HERDR_BIN" pane send-keys "$pane_id" Enter
-}
-
-run_interactive_codex_job() {
-  local job_name="$1"
-  local skill_name="$2"
-  local extra_prompt="$3"
-  local log_file="${LOG_DIR}/${job_name}.log"
-  local lock_file="${STATE_DIR}/${job_name}.lock"
-  local prepare_script="${NOTES_DIR}/.agents/skills/${skill_name}/scripts/prepare_interactive_session.py"
-  local prepare_output_file
-  local prepare_error_file
-  local source_update_file
-  local launch
-  local prompt
-  local task_count
-  local run_id
-  local action
-  local session_id
-  local run_lock_file
-  local agent_name=""
-  local pane_id=""
-  local status=0
-
-  mkdir -p "$LOG_DIR" "$STATE_DIR"
-
-  exec 9>"$lock_file"
-  if ! flock -n 9; then
-    printf '[%s] skipped scheduled Codex job: %s; already running.\n' \
-      "$(date --iso-8601=seconds)" "$job_name" | append_job_log "$log_file"
-    return 0
-  fi
-
-  if [[ ! -f "$prepare_script" ]]; then
-    echo "Interactive scheduled Codex job is missing prepare script: $prepare_script" >&2
-    return 1
-  fi
-
-  prepare_output_file="$(mktemp "${STATE_DIR}/${job_name}.prepare.XXXXXX")"
-  prepare_error_file="$(mktemp "${STATE_DIR}/${job_name}.prepare-stderr.XXXXXX")"
-  source_update_file="$(mktemp "${STATE_DIR}/${job_name}.source.XXXXXX")"
-
-  set +e
-  (
-    cd "$NOTES_DIR"
-    uv run --env-file .env python "$prepare_script" --notes-dir "$NOTES_DIR"
-  ) > "$prepare_output_file" 2> "$prepare_error_file"
-  status=$?
-  set -e
-
-  if (( status == 0 )); then
-    if ! launch="$(jq -r '.launch // false' "$prepare_output_file" 2> "$source_update_file")"; then
-      status=1
-    elif [[ "$launch" == "true" ]]; then
-      action="$(jq -r '.action // "start"' "$prepare_output_file")"
-      prompt="$(jq -r '.prompt // empty' "$prepare_output_file")"
-      task_count="$(jq -r '.task_count // 0' "$prepare_output_file")"
-      run_id="$(jq -r '.run_id // empty' "$prepare_output_file")"
-      session_id="$(jq -r '.session_id // empty' "$prepare_output_file")"
-      run_lock_file="${STATE_DIR}/${job_name}.${run_id}.lock"
-
-      if [[ -z "$prompt" ]]; then
-        echo "Interactive scheduled Codex job ${job_name} did not produce a prompt." > "$source_update_file"
-        status=1
-      elif [[ -z "$run_id" ]]; then
-        echo "Interactive scheduled Codex job ${job_name} did not produce a run_id." > "$source_update_file"
-        status=1
-      elif ! flock -n "$run_lock_file" true; then
-        printf 'Interactive scheduled Codex run already active: %s run=%s.\n' \
-          "$job_name" "$run_id" > "$source_update_file"
-        status=0
-        launch="false"
-      elif [[ ! -x "$HERDR_BIN" ]]; then
-        echo "Herdr executable not found for interactive scheduled job: $HERDR_BIN" > "$source_update_file"
-        status=1
-      elif [[ ! -x "$HERDR_LAUNCHER" ]]; then
-        echo "Herdr launcher not executable: $HERDR_LAUNCHER" > "$source_update_file"
-        status=1
-      elif [[ ! -x "$INTERACTIVE_CODEX_SESSION_RUNNER" ]]; then
-        echo "Interactive Codex session runner not executable: $INTERACTIVE_CODEX_SESSION_RUNNER" > "$source_update_file"
-        status=1
-      elif ! valid_nonnegative_integer "$HERDR_CODEX_INPUT_DELAY_MS"; then
-        echo "HERDR_CODEX_INPUT_DELAY_MS must be a non-negative integer." > "$source_update_file"
-        status=1
-      else
-        prompt="$(codex_terminal_input "$prompt")"
-        agent_name="$(herdr_codex_agent_name "$run_id")"
-        if ! start_herdr_codex_agent "$agent_name" "$job_name" "$run_id" "$session_id" >> "$source_update_file" 2>&1; then
-          status=1
-        elif ! pane_id="$(herdr_agent_pane_id "$agent_name" 2>> "$source_update_file")" || [[ -z "$pane_id" ]]; then
-          echo "Herdr did not report a pane id for agent: $agent_name" >> "$source_update_file"
-          status=1
-        elif ! "$HERDR_LAUNCHER" >> "$source_update_file" 2>&1; then
-          status=1
-        elif ! send_herdr_codex_input "$agent_name" "$pane_id" "$prompt" "$HERDR_CODEX_INPUT_DELAY_MS" >> "$source_update_file" 2>&1; then
-          status=1
-        else
-          status=0
-        fi
-      fi
-    else
-      task_count="$(jq -r '.task_count // 0' "$prepare_output_file")"
-      run_id="$(jq -r '.run_id // empty' "$prepare_output_file")"
-    fi
-  fi
-
-  {
-    printf '\n[%s] scheduled Codex job: %s status=%s\n' \
-      "$(date --iso-8601=seconds)" "$job_name" "$status"
-    printf 'requested session source: interactive\n'
-    if [[ -n "${action:-}" ]]; then
-      printf 'action: %s\n' "$action"
-    fi
-    if [[ -n "${run_id:-}" ]]; then
-      printf 'run id: %s\n' "$run_id"
-    fi
-    if [[ -n "${session_id:-}" ]]; then
-      printf 'session id: %s\n' "$session_id"
-    fi
-    if [[ -n "${task_count:-}" ]]; then
-      printf 'claimed task count: %s\n' "$task_count"
-    fi
-    if [[ -n "$agent_name" ]]; then
-      printf 'herdr agent: %s\n' "$agent_name"
-    fi
-    if [[ -n "$pane_id" ]]; then
-      printf 'herdr pane id: %s\n' "$pane_id"
-    fi
-    if [[ -s "$prepare_error_file" ]]; then
-      printf 'prepare stderr:\n'
-      cat "$prepare_error_file"
-      printf '\n'
-    fi
-    if [[ -s "$source_update_file" ]]; then
-      printf 'interactive launch details:\n'
-      cat "$source_update_file"
-      printf '\n'
-    fi
-    if [[ "$launch" == "true" && "$status" == "0" ]]; then
-      printf 'final response:\n(interactive Codex session opened in Herdr)\n'
-    elif [[ -s "$prepare_output_file" ]]; then
-      printf 'prepare response:\n'
-      jq -c 'del(.prompt)' "$prepare_output_file" || cat "$prepare_output_file"
-      printf '\n'
-    fi
-  } | append_job_log "$log_file"
-
-  rm -f "$prepare_output_file" "$prepare_error_file" "$source_update_file"
-
-  return "$status"
-}
-
 run_and_record_codex_job() {
   local job_name="$1"
   local skill_name="$2"
@@ -1044,23 +516,6 @@ run_and_record_codex_job() {
   local thread_id=""
   local error_count_before
   local -a codex_command
-
-  if [[ "$session_source" == "interactive" ]]; then
-    error_count_before="$(desktop_error_count "$skill_name")"
-    if run_interactive_codex_job "$job_name" "$skill_name" "$extra_prompt"; then
-      status=0
-    else
-      status=$?
-    fi
-    if (( status != 0 )); then
-      log_scheduled_job_failure \
-        "$job_name" "$skill_name" "$status" "$error_count_before" || true
-    fi
-    if (( status != 0 && overall_status == 0 )); then
-      overall_status="$status"
-    fi
-    return 0
-  fi
 
   mkdir -p "$LOG_DIR" "$STATE_DIR"
 
@@ -1215,16 +670,12 @@ validate_job_config() {
   fi
 
   if ! valid_session_source "$session_source"; then
-    echo "Invalid session source for job ${job_name}: ${session_source}. Expected cli, exec, or interactive." >&2
+    echo "Invalid session source for job ${job_name}: ${session_source}. Expected cli or exec." >&2
     return 2
   fi
 
   if [[ -n "$profile_name" ]] && ! valid_name "$profile_name"; then
     echo "Invalid Codex profile name for job ${job_name}: ${profile_name}" >&2
-    return 2
-  fi
-  if [[ -n "$profile_name" && "$session_source" == "interactive" ]]; then
-    echo "Interactive scheduled jobs cannot use a non-interactive Codex profile: ${job_name}" >&2
     return 2
   fi
 }
@@ -1396,7 +847,7 @@ run_mode="${1:-all}"
 run_slot=""
 
 case "$run_mode" in
-  all|c-bang|ci-bang|message-replies)
+  all|message-replies)
     if (( $# != 0 && $# != 1 )); then
       usage
       exit 2
@@ -1435,16 +886,8 @@ acquire_notes_auto_commit_lock
 
 case "$run_mode" in
   all)
-    scheduled_c_bang_jobs
-    scheduled_ci_bang_jobs
     scheduled_codex_jobs
     scheduled_message_reply_jobs
-    ;;
-  c-bang)
-    scheduled_c_bang_jobs
-    ;;
-  ci-bang)
-    scheduled_ci_bang_jobs
     ;;
   message-replies)
     scheduled_message_reply_jobs
