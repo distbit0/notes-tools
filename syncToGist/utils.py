@@ -1,8 +1,8 @@
 import json
 from os import path
-import subprocess
-import time
 import sys
+
+import requests
 
 
 def getAbsPath(relPath):
@@ -16,7 +16,7 @@ def getConfig():
 
 
 sys.path.append(getConfig()["gistWriteDir"])
-from writeGist import writeContent
+from writeGist import gh_api_key, writeContent
 
 
 def writeGist(text, name, guid=None, gist_id=None):
@@ -29,6 +29,29 @@ def writeGist(text, name, guid=None, gist_id=None):
         return gistUrl.strip()
     else:
         return None
+
+
+def delete_gist(gist_url):
+    if not gh_api_key:
+        raise RuntimeError("gh_api_key is not configured")
+
+    gist_id = gist_url.rstrip("/").rsplit("/", 1)[-1]
+    response = requests.delete(
+        f"https://api.github.com/gists/{gist_id}",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {gh_api_key}",
+            "X-GitHub-Api-Version": "2026-03-10",
+        },
+        timeout=30,
+    )
+    if response.status_code == 404:
+        print(f"Gist {gist_id} was already absent")
+    elif response.status_code != 204:
+        raise RuntimeError(
+            f"Could not delete Gist {gist_id}: GitHub returned "
+            f"HTTP {response.status_code}"
+        )
 
 
 def convertMdUrlToHtmlUrl(mdUrl):

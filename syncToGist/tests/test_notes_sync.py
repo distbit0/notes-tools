@@ -3,6 +3,8 @@ from pathlib import Path
 import sys
 import threading
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -104,6 +106,59 @@ def test_real_notes_gist_scan_ignores_subdirectories() -> None:
         Path(info["file_path"]).parent == NOTES_FOLDER
         for info in index_notes.values()
     )
+
+
+def test_real_notes_gist_scan_excludes_blocked_notes() -> None:
+    index_notes = notesSync.getAllIndexNotes(str(NOTES_FOLDER))
+    linked_notes = notesSync.getAllNotesLinkedFromIndexNotes(
+        index_notes,
+        str(NOTES_FOLDER),
+    )
+    blocked_note_names = {
+        path.name
+        for path in NOTES_FOLDER.glob("*.md")
+        if notesSync.has_block_token(
+            path.read_text(encoding="utf-8", errors="ignore")
+        )
+    }
+
+    assert blocked_note_names
+    assert blocked_note_names.isdisjoint(index_notes | linked_notes)
+
+
+def test_blocked_note_cleanup_deletes_real_gist_and_clears_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    blocked_note_path = next(
+        path
+        for path in NOTES_FOLDER.glob("*.md")
+        if notesSync.has_block_token(
+            path.read_text(encoding="utf-8", errors="ignore")
+        )
+    )
+    published_metadata = next(
+        metadata
+        for path in NOTES_FOLDER.glob("*.md")
+        if (metadata := notesSync.load_note(path).metadata).get("gist_url")
+        and "live" in metadata
+    )
+    copied_note_path = tmp_path / blocked_note_path.name
+    copied_note_path.write_bytes(blocked_note_path.read_bytes())
+    copied_note = notesSync.load_note(copied_note_path)
+    copied_note.metadata["gist_url"] = published_metadata["gist_url"]
+    copied_note.metadata["live"] = published_metadata["live"]
+    notesSync.frontmatter.dump(copied_note, copied_note_path)
+    deleted_gist_urls = []
+    monkeypatch.setattr(notesSync, "delete_gist", deleted_gist_urls.append)
+
+    notesSync.delete_blocked_note_gists(str(tmp_path))
+    notesSync.delete_blocked_note_gists(str(tmp_path))
+
+    cleaned_metadata = notesSync.load_note(copied_note_path).metadata
+    assert deleted_gist_urls == [published_metadata["gist_url"]]
+    assert "gist_url" not in cleaned_metadata
+    assert "live" not in cleaned_metadata
 
 
 def test_real_notes_teleport_lookup_ignores_subdirectories() -> None:

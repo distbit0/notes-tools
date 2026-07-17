@@ -8,10 +8,11 @@ from pathlib import Path
 import frontmatter
 
 from teleportWikilinks import create_backlinks
-from utils import *
+from utils import delete_gist, getConfig, writeGist
 
 
 SHARE_TOKEN_PATTERN = re.compile(r"(?<![\w-])#share(?![\w-])")
+BLOCK_TOKEN_PATTERN = re.compile(r"(?<![\w-])#block(?![\w-])")
 
 
 @contextmanager
@@ -68,6 +69,10 @@ def has_share_token(content):
     return SHARE_TOKEN_PATTERN.search(content) is not None
 
 
+def has_block_token(content):
+    return BLOCK_TOKEN_PATTERN.search(content) is not None
+
+
 def note_body_text(raw_content):
     if not raw_content.startswith("---"):
         return raw_content
@@ -103,7 +108,9 @@ def getAllIndexNotes(directory):
         file_name = os.path.basename(file_path)
         with open(file_path, "r", encoding="utf-8", errors="ignore") as file:
             raw_content = file.read()
-        if not has_share_token(note_body_text(raw_content)):
+        if has_block_token(raw_content) or not has_share_token(
+            note_body_text(raw_content)
+        ):
             continue
         post = load_note(file_path)
         print(file_name)
@@ -133,8 +140,14 @@ def getAllNotesLinkedFromIndexNotes(indexNotes, directory):
             matching_file = top_level_md_by_stem_lower.get(note_slug(wikilink[0]))
 
             if matching_file:
+                with open(
+                    matching_file, "r", encoding="utf-8", errors="ignore"
+                ) as file:
+                    raw_content = file.read()
+                if has_block_token(raw_content):
+                    continue
                 file_name = os.path.basename(matching_file)
-                post = load_note(matching_file)
+                post = frontmatter.loads(raw_content)
                 gist_url = post.metadata.get("gist_url", None)
                 file_info_dict[file_name] = {
                     "file_path": matching_file,
@@ -147,6 +160,27 @@ def getAllNotesLinkedFromIndexNotes(indexNotes, directory):
             # )
 
     return file_info_dict
+
+
+def delete_blocked_note_gists(directory):
+    for file_path in _iter_top_level_markdown_paths(directory):
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as file:
+            raw_content = file.read()
+        if not has_block_token(raw_content):
+            continue
+
+        post = frontmatter.loads(raw_content)
+        gist_url = post.metadata.get("gist_url")
+        if gist_url:
+            delete_gist(gist_url)
+
+        metadata_changed = "gist_url" in post.metadata or "live" in post.metadata
+        post.metadata.pop("gist_url", None)
+        post.metadata.pop("live", None)
+        if post.metadata and metadata_changed:
+            frontmatter.dump(post, file_path)
+        elif not post.metadata and (metadata_changed or raw_content.startswith("---")):
+            Path(file_path).write_text(post.content, encoding="utf-8")
 
 
 def setLiveFlag(allGistNotes, directory):
@@ -173,6 +207,7 @@ def setLiveFlag(allGistNotes, directory):
 
 
 def process_markdown_files(directory):
+    delete_blocked_note_gists(directory)
     indexNotes = getAllIndexNotes(directory)
     notesLinkedFromIndexNotes = getAllNotesLinkedFromIndexNotes(indexNotes, directory)
     allGistNotes = indexNotes | notesLinkedFromIndexNotes
