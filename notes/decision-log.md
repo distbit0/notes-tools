@@ -1,8 +1,15 @@
 # Decision Log
 
+## 2026-07-17: Bound ChatGPT backend request volume
+
+- The separate 15-minute pending-conversation scan was removed after it repeatedly scanned roughly 1,600 conversations and triggered sustained HTTP 429 responses. Pending reminders are now derived only from new or changed conversations found by the browser-action scan, then handed to a local-only Python writer.
+- Browser actions run every four hours. Archive export remains at 03:00 and 15:00, and uses 100-conversation list pages so it retains complete cutoff coverage with fewer requests.
+- All direct ChatGPT backend work shares one client with 10–15 second pacing. A 429 is never retried: it records a shared 24-hour cooldown, terminates the triggering run visibly, and makes later invocations explicit zero-request no-ops until expiry.
+- The user chose to retain low-rate access to the unofficial consumer backend. Lower request volume reduces the observed failure mode but does not remove account or terms risk.
+
 ## 2026-07-16: ChatGPT browser actions run independently
 
-- A dedicated `--browser-actions` mode runs every two hours, independently of the 03:00/15:00 archive export and its run gate.
+- A dedicated `--browser-actions` mode runs independently of the 03:00/15:00 archive export and its run gate.
 - It opens a conversation in Brave when the latest visible assistant message contains generated sandbox HTML or direct `text/html`, recording the assistant message ID in a separate browser-actions ledger. Each new matching assistant response opens once, including later visualizations in a conversation that opened previously.
 - It also drains the configured `open_in_browser` project: each chat opens as a new Brave tab and is then removed from the project. The project remains the retry ledger if opening or removal fails.
 - Current archive Markdown rules out clear non-matches locally; possible matches and new or changed conversations are verified from the live conversation response.
@@ -22,7 +29,7 @@
 
 - Codex final answers are tracked per exact assistant-message offset only so a later user reply or notification activation can mark them handled. They are not appended to the inbox on a timer.
 - A Codex reminder is emitted only for an interactive thread whose latest meaningful activity is a user prompt and whose watcher/session evidence shows no active process. Scheduled `exec` sessions are excluded.
-- ChatGPT unread state comes from recognized backend status fields fetched with Brave cookies through Node. Unknown status shape produces a warning and no reminder rather than a guessed unread state.
+- ChatGPT unread state comes from recognized backend status fields on incrementally discovered conversations. Unknown status shape produces a warning and no reminder rather than a guessed unread state.
 
 ## Message capture preserves upstream state
 

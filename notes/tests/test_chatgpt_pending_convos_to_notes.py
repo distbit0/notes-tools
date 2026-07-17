@@ -11,18 +11,28 @@ import chatgpt_pending_convos_to_notes
 SOURCE_STATE_PATH = (
     Path.home() / ".local/state/chatgpt-pending-convos-to-notes.json"
 )
+SOURCE_ARCHIVE_STATE_PATH = (
+    Path.home() / ".local/state/chatgpt-convos-to-notes/state.json"
+)
 SOURCE_INBOX_PATH = Path.home() / "notes/inbox-index.md"
 
 
 def real_pending_input_record() -> dict[str, str]:
     source_state = json.loads(SOURCE_STATE_PATH.read_text(encoding="utf-8"))
-    source_record = next(iter(source_state["pending"].values()))
-    return {
-        "conversationId": source_record["conversation_id"],
-        "reason": source_record["reason"],
-        "title": source_record["title"],
-        "latestMessageId": source_record["latest_message_id"],
-    }
+    archive_state = json.loads(SOURCE_ARCHIVE_STATE_PATH.read_text(encoding="utf-8"))
+    for key, appended_record in source_state["appended"].items():
+        if not isinstance(appended_record, dict):
+            continue
+        _, conversation_id, reason, key_suffix = key.split(":", 3)
+        archived_conversation = archive_state["conversations"].get(conversation_id)
+        if archived_conversation:
+            return {
+                "conversationId": conversation_id,
+                "reason": reason,
+                "title": archived_conversation["title"],
+                "latestMessageId": "" if key_suffix == reason else key_suffix,
+            }
+    raise RuntimeError("No real pending ChatGPT reminder is available for testing")
 
 
 def test_local_pending_writer_appends_a_real_record_once(

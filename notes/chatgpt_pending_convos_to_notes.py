@@ -170,6 +170,9 @@ def main(argv: list[str] | None = None) -> int:
     for record in records:
         state["appended"][record["key"]] = acknowledged_at_ms
         del state["pending"][record["key"]]
+    for key in list(state["pending"]):
+        if key in state["appended"]:
+            del state["pending"][key]
     save_state(state)
     logger.info(f"Appended {len(records)} ChatGPT conversation link(s)")
     print(json.dumps({"appended": len(records)}))
