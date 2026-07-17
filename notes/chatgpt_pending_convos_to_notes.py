@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
-import subprocess
 import sys
 import tempfile
 import time
@@ -19,10 +17,6 @@ from notes_utils import append_markdown_lines, configure_logger
 NOTES_FILE = Path.home() / "notes/inbox-index.md"
 LOG_PATH = Path(__file__).with_name("chatgpt-pending-convos-to-notes.log")
 STATE_PATH = Path.home() / ".local/state/chatgpt-pending-convos-to-notes.json"
-CHATGPT_FETCHER_PATH = Path(__file__).with_name("chatgpt_backend_fetch.mjs")
-BRAVE_COOKIES_PATH = (
-    Path.home() / ".config/BraveSoftware/Brave-Browser/Default/Cookies"
-)
 STATE_SCHEMA = 1
 PREFIX_LENGTH = 128
 
@@ -113,76 +107,29 @@ def validate_chatgpt_record(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def load_chatgpt_cookie_header() -> str:
+def read_pending_records() -> list[dict[str, Any]]:
     try:
-        import browser_cookie3
-    except ImportError as exc:
-        raise RuntimeError(
-            "browser-cookie3 is not installed; run `uv sync` in "
-            f"{Path.home() / 'dev/notes-tools'}"
-        ) from exc
-
-    if not BRAVE_COOKIES_PATH.exists():
-        raise RuntimeError(f"Brave cookies database not found: {BRAVE_COOKIES_PATH}")
-    cookie_jar = browser_cookie3.brave(
-        cookie_file=str(BRAVE_COOKIES_PATH),
-        domain_name="chatgpt.com",
-    )
-    cookie_parts = [
-        f"{cookie.name}={cookie.value}"
-        for cookie in cookie_jar
-        if "chatgpt.com" in cookie.domain
-    ]
-    if not cookie_parts:
-        raise RuntimeError("No ChatGPT cookies found in Brave Default profile")
-    return "; ".join(cookie_parts)
-
-
-def fetch_pending_records() -> list[dict[str, Any]]:
-    if not shutil.which("node"):
-        raise RuntimeError("node not found in PATH")
-    if not CHATGPT_FETCHER_PATH.exists():
-        raise RuntimeError(f"ChatGPT fetcher not found: {CHATGPT_FETCHER_PATH}")
-
-    result = subprocess.run(
-        ["node", str(CHATGPT_FETCHER_PATH)],
-        input=json.dumps({"cookieHeader": load_chatgpt_cookie_header()}),
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        error = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(f"ChatGPT fetch failed: {error or 'unknown error'}")
-    if result.stderr.strip():
-        logger.warning(result.stderr.strip())
-
-    try:
-        raw_records = json.loads(result.stdout)
+        raw_records = json.load(sys.stdin)
     except json.JSONDecodeError as exc:
-        raise RuntimeError("ChatGPT fetcher returned invalid JSON") from exc
+        raise RuntimeError("Pending ChatGPT records are invalid JSON") from exc
     if not isinstance(raw_records, list):
-        raise RuntimeError("ChatGPT fetcher JSON root is not a list")
+        raise RuntimeError("Pending ChatGPT records JSON root is not a list")
     if not all(isinstance(record, dict) for record in raw_records):
-        raise RuntimeError("ChatGPT fetcher returned a non-object record")
+        raise RuntimeError("Pending ChatGPT records contain a non-object")
     return [validate_chatgpt_record(record) for record in raw_records]
 
 
 def update_pending_records(
     state: dict[str, Any], records: list[dict[str, Any]]
 ) -> None:
-    previous_pending = state["pending"]
     now_ms = current_epoch_ms()
-    state["pending"] = {
-        record["key"]: {
+    for record in records:
+        previous_record = state["pending"].get(record["key"], {})
+        state["pending"][record["key"]] = {
             **record,
-            "created_at_ms": previous_pending.get(record["key"], {}).get(
-                "created_at_ms", now_ms
-            ),
+            "created_at_ms": previous_record.get("created_at_ms", now_ms),
             "updated_at_ms": now_ms,
         }
-        for record in records
-    }
 
 
 def unappended_records(state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -210,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
     configure_logger(LOG_PATH)
 
     state = load_state()
-    update_pending_records(state, fetch_pending_records())
+    update_pending_records(state, read_pending_records())
     records = unappended_records(state)
     if args.dry_run:
         for record in records:
@@ -225,6 +172,7 @@ def main(argv: list[str] | None = None) -> int:
         del state["pending"][record["key"]]
     save_state(state)
     logger.info(f"Appended {len(records)} ChatGPT conversation link(s)")
+    print(json.dumps({"appended": len(records)}))
     return 0
 
 

@@ -1,0 +1,5 @@
+{
+  "observedAt": "2026-07-17T17:45:29+07:00",
+  "requestPath": "/backend-api/conversations?offset=1000&limit=100&order=updated",
+  "status": 429
+}

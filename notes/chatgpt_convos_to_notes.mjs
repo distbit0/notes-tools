@@ -14,11 +14,23 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  activeRateLimitCooldown,
+  ChatGptClient,
+  pendingRecordsFromCandidate,
+  pendingSignalFromListItem,
+  UserFacingError,
+} from "./chatgpt_backend_client.mjs";
+
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = path.dirname(SCRIPT_PATH);
 const MISC_ROOT = path.dirname(SCRIPT_DIR);
 const HOME_DIR = os.homedir();
 const CONFIG_PATH = path.join(SCRIPT_DIR, "config.json");
+const PENDING_CONVERSATIONS_SCRIPT_PATH = path.join(
+  SCRIPT_DIR,
+  "chatgpt_pending_convos_to_notes.py",
+);
 const DEFAULT_OUTPUT_ROOT = path.join(HOME_DIR, "notes/chatgpt-conversations");
 const DEFAULT_STATE_PATH = path.join(
   HOME_DIR,
@@ -28,6 +40,10 @@ const DEFAULT_BROWSER_STATE_PATH = path.join(
   HOME_DIR,
   ".local/state/chatgpt-browser-actions/state.json",
 );
+const DEFAULT_RATE_LIMIT_STATE_PATH = path.join(
+  HOME_DIR,
+  ".local/state/chatgpt-backend-rate-limit.json",
+);
 const DEFAULT_BRAVE_ROOT = path.join(
   HOME_DIR,
   ".config/BraveSoftware/Brave-Browser",
@@ -36,10 +52,8 @@ const DEFAULT_BRAVE_PROFILE = "Default";
 const DEFAULT_CUTOFF_ISO = "2026-05-27T00:00:00+07:00";
 const TIME_ZONE = "Asia/Ho_Chi_Minh";
 const MARKDOWN_FORMAT_VERSION = 3;
-const CONVERSATIONS_PAGE_SIZE = 28;
+const CONVERSATIONS_PAGE_SIZE = 100;
 const PROJECT_CONVERSATIONS_PAGE_SIZE = 20;
-const REQUEST_RETRY_LIMIT = 3;
-const REQUEST_TIMEOUT_MS = 60_000;
 const INTERACTIVE_HTML_LINK_PATTERN =
   /\bsandbox:\/{1,2}[^\s)\]>"']+[.]html(?:[?#][^\s)\]>"']*)?/i;
 const ARCHIVED_HTML_HINT_PATTERN = /[.]html(?:[?#)\]\s]|$)|\btext\/html\b/i;
@@ -48,9 +62,6 @@ const PERMANENT_ATTACHMENT_STATUSES = new Set([
   "file_not_found",
   "access_denied",
 ]);
-
-class UserFacingError extends Error {}
-class NonRetryableRequestError extends Error {}
 
 function usage() {
   return `Usage: chatgpt_convos_to_notes.mjs [options]
@@ -70,8 +81,8 @@ Options:
   --brave-root <dir>         Brave user data root (default: ${DEFAULT_BRAVE_ROOT})
   --bearer <token>           Use this bearer token instead of Brave cookies
   --max-conversations <n>    Process at most n conversations this run
-  --request-delay-ms <n>     Minimum delay between requests (default: 4000)
-  --jitter-ms <n>            Additional random request delay (default: 1000)
+  --request-delay-ms <n>     Minimum delay between requests (default: 10000)
+  --jitter-ms <n>            Additional random request delay (default: 5000)
   --force-run                Bypass the local twice/day and 6-hour start gate
   --status                   Show local run-gate status without network access
   --help                     Show this help
@@ -103,11 +114,12 @@ function parseArgs(argv, browserQueue = loadConfiguration()) {
     outputRoot: DEFAULT_OUTPUT_ROOT,
     statePath: DEFAULT_STATE_PATH,
     browserStatePath: DEFAULT_BROWSER_STATE_PATH,
+    rateLimitStatePath: DEFAULT_RATE_LIMIT_STATE_PATH,
     cutoffIso: DEFAULT_CUTOFF_ISO,
     braveRoot: DEFAULT_BRAVE_ROOT,
     braveProfile: DEFAULT_BRAVE_PROFILE,
-    requestDelayMs: 4000,
-    jitterMs: 1000,
+    requestDelayMs: 10_000,
+    jitterMs: 5000,
     minRunSpacingHours: 6,
     maxRunsPerDay: 2,
     maxConversations: null,
@@ -117,6 +129,7 @@ function parseArgs(argv, browserQueue = loadConfiguration()) {
     bearer: process.env.CHATGPT_BEARER_TOKEN || "",
     openInBrowserProject: browserQueue.openInBrowserProject,
     braveExecutable: browserQueue.braveExecutable,
+    projectRoot: MISC_ROOT,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -382,277 +395,18 @@ async function finalizeRun(statePath, state, run, status, summary) {
   await saveState(statePath, state);
 }
 
-function buildPythonCookieReader(options) {
-  return `
-from __future__ import annotations
-
-import pathlib
-import sys
-
-import browser_cookie3
-
-brave_root = pathlib.Path(${JSON.stringify(options.braveRoot)})
-profile = ${JSON.stringify(options.braveProfile)}
-cookie_file = brave_root / profile / "Cookies"
-if not cookie_file.exists():
-    raise SystemExit(f"Brave cookie DB not found: {cookie_file}")
-
-jar = browser_cookie3.brave(cookie_file=str(cookie_file), domain_name="chatgpt.com")
-cookies = [
-    cookie
-    for cookie in jar
-    if cookie.domain.endswith("chatgpt.com") and cookie.value
-]
-if not cookies:
-    raise SystemExit("No chatgpt.com cookies found in Brave profile")
-
-cookies.sort(key=lambda cookie: (cookie.domain, cookie.path, cookie.name))
-sys.stdout.write("; ".join(f"{cookie.name}={cookie.value}" for cookie in cookies))
-`;
-}
-
-function readBraveCookieHeader(options) {
-  const result = spawnSync(
-    "uv",
-    ["run", "--project", MISC_ROOT, "python", "-c", buildPythonCookieReader(options)],
-    {
-      encoding: "utf8",
-      maxBuffer: 4 * 1024 * 1024,
-    },
-  );
-  if (result.status !== 0) {
-    const error = (result.stderr || result.stdout || "").trim();
-    throw new UserFacingError(
-      `Could not read Brave ChatGPT cookies: ${error || "unknown error"}`,
-    );
-  }
-  const cookieHeader = result.stdout.trim();
-  if (!cookieHeader.includes("__Secure-next-auth.session-token")) {
-    throw new UserFacingError(
-      "Brave profile does not contain a ChatGPT session-token cookie.",
-    );
-  }
-  return cookieHeader;
-}
-
-class RequestThrottler {
-  constructor({ requestDelayMs, jitterMs }) {
-    this.requestDelayMs = requestDelayMs;
-    this.jitterMs = jitterMs;
-    this.nextAllowedAt = 0;
-  }
-
-  async wait() {
-    const now = Date.now();
-    if (this.nextAllowedAt > now) {
-      await sleep(this.nextAllowedAt - now);
-    }
-    const jitter = this.jitterMs > 0 ? Math.floor(Math.random() * this.jitterMs) : 0;
-    this.nextAllowedAt = Date.now() + this.requestDelayMs + jitter;
-  }
-}
-
-class ChatGptClient {
-  constructor(options) {
-    this.options = options;
-    this.throttler = new RequestThrottler(options);
-    this.deviceId = randomUUID();
-    this.accessToken = "";
-    this.accountId = "";
-    this.requestCount = 0;
-  }
-
-  async initialize() {
-    if (this.options.bearer) {
-      this.accessToken = this.options.bearer;
-      this.accountId = accountIdFromBearer(this.accessToken);
-      return;
-    }
-
-    const cookieHeader = readBraveCookieHeader(this.options);
-    const session = await this.fetchSession(cookieHeader);
-    if (!session.accessToken) {
-      throw new UserFacingError(
-        "ChatGPT session endpoint did not return an access token.",
-      );
-    }
-    this.accessToken = session.accessToken;
-    this.accountId = session.account?.id || accountIdFromBearer(this.accessToken);
-  }
-
-  async fetchSession(cookieHeader) {
-    const response = await this.fetchWithRetry(
-      "https://chatgpt.com/api/auth/session",
-      {
-        headers: {
-          Accept: "application/json",
-          Cookie: cookieHeader,
-          Referer: "https://chatgpt.com/",
-          "User-Agent": browserUserAgent(),
-        },
-      },
-    );
-    return response.json();
-  }
-
-  async fetchBackendJson(pathname) {
-    const response = await this.fetchWithRetry(
-      `https://chatgpt.com${pathname.startsWith("/") ? "" : "/"}${pathname}`,
-      {
-        headers: this.backendHeaders("application/json"),
-      },
-    );
-    return response.json();
-  }
-
-  async patchBackendJson(pathname, body) {
-    const response = await this.fetchWithRetry(
-      `https://chatgpt.com${pathname.startsWith("/") ? "" : "/"}${pathname}`,
-      {
-        method: "PATCH",
-        headers: this.backendHeaders("application/json"),
-        body: JSON.stringify(body),
-      },
-    );
-    return response.json();
-  }
-
-  async fetchFileDownloadInfo(fileId, conversationId) {
-    const response = await this.fetchWithRetry(
-      `https://chatgpt.com/backend-api/files/download/${encodeURIComponent(
-        fileId,
-      )}?conversation_id=${encodeURIComponent(conversationId)}&inline=false`,
-      {
-        headers: this.backendHeaders("application/json"),
-      },
-      { authErrorIsFatal: false },
-    );
-    return response.json();
-  }
-
-  async fetchDownload(downloadUrl) {
-    const response = await this.fetchWithRetry(downloadUrl, {
-      headers: this.backendHeaders("*/*"),
-    }, { authErrorIsFatal: false });
-    return {
-      buffer: Buffer.from(await response.arrayBuffer()),
-      contentType: response.headers.get("content-type") || "",
-    };
-  }
-
-  backendHeaders(accept) {
-    const headers = {
-      Accept: accept,
-      Authorization: `Bearer ${this.accessToken}`,
-      Origin: "https://chatgpt.com",
-      Referer: "https://chatgpt.com/",
-      "Content-Type": "application/json",
-      "Oai-Device-Id": this.deviceId,
-      "Oai-Language": "en-US",
-      "User-Agent": browserUserAgent(),
-    };
-    if (this.accountId) headers["chatgpt-account-id"] = this.accountId;
-    return headers;
-  }
-
-  async fetchWithRetry(url, init, { authErrorIsFatal = true } = {}) {
-    let lastError = null;
-    for (let attempt = 1; attempt <= REQUEST_RETRY_LIMIT; attempt += 1) {
-      await this.throttler.wait();
-      this.requestCount += 1;
-      try {
-        const response = await fetch(url, {
-          ...init,
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-        });
-        if (response.ok) return response;
-
-        if (authErrorIsFatal && (response.status === 401 || response.status === 403)) {
-          throw new UserFacingError(
-            `ChatGPT request failed with HTTP ${response.status}. ` +
-              "Authentication or Cloudflare access is no longer valid.",
-          );
-        }
-
-        if (
-          (response.status === 429 || response.status >= 500) &&
-          attempt < REQUEST_RETRY_LIMIT
-        ) {
-          const retryAfterMs = retryAfterToMs(response.headers.get("retry-after"));
-          const waitMs = retryAfterMs ?? attempt * 30_000 + randomJitter(5000);
-          console.warn(
-            `Warning: ChatGPT returned HTTP ${response.status}; retrying in ${Math.round(
-              waitMs / 1000,
-            )}s.`,
-          );
-          await sleep(waitMs);
-          continue;
-        }
-
-        const body = await response.text().catch(() => "");
-        throw new NonRetryableRequestError(
-          `ChatGPT request failed with HTTP ${response.status}: ${body.slice(0, 200)}`,
-        );
-      } catch (error) {
-        if (
-          error instanceof UserFacingError ||
-          error instanceof NonRetryableRequestError
-        ) {
-          throw error;
-        }
-        lastError = error;
-        if (attempt < REQUEST_RETRY_LIMIT) {
-          const waitMs = attempt * 30_000 + randomJitter(5000);
-          console.warn(
-            `Warning: request failed (${error.message}); retrying in ${Math.round(
-              waitMs / 1000,
-            )}s.`,
-          );
-          await sleep(waitMs);
-          continue;
-        }
-      }
-    }
-    throw lastError;
-  }
-}
-
-function browserUserAgent() {
-  return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
-}
-
-function retryAfterToMs(rawValue) {
-  if (!rawValue) return null;
-  const seconds = Number.parseFloat(rawValue);
-  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
-  const dateMs = Date.parse(rawValue);
-  if (Number.isFinite(dateMs)) return Math.max(0, dateMs - Date.now());
-  return null;
-}
-
-function randomJitter(maxMs) {
-  return Math.floor(Math.random() * maxMs);
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function accountIdFromBearer(accessToken) {
-  try {
-    const payload = JSON.parse(
-      Buffer.from(accessToken.split(".")[1], "base64url").toString("utf8"),
-    );
-    return payload["https://api.openai.com/auth"]?.chatgpt_account_id || "";
-  } catch {
-    return "";
-  }
-}
-
 async function syncChatGptConversations(options) {
   await mkdir(options.outputRoot, { recursive: true });
   const state = await loadState(options.statePath);
   const now = new Date();
+  const summary = {
+    discovered: 0,
+    skippedUnchanged: 0,
+    exported: 0,
+    attachmentsDownloaded: 0,
+    attachmentWarnings: 0,
+    apiRequests: 0,
+  };
 
   if (options.statusOnly) {
     const gateStatus = options.forceRun
@@ -665,18 +419,12 @@ async function syncChatGptConversations(options) {
     return { status: "status" };
   }
 
+  const cooldown = await activeRateLimitCooldown(options.rateLimitStatePath);
+  if (cooldown) return cooldownResult(cooldown, summary);
+
   if (!options.forceRun) checkRunGate(state, now, options);
   const run = recordRunStart(state, options, now);
   await saveState(options.statePath, state);
-
-  const summary = {
-    discovered: 0,
-    skippedUnchanged: 0,
-    exported: 0,
-    attachmentsDownloaded: 0,
-    attachmentWarnings: 0,
-    apiRequests: 0,
-  };
   const client = new ChatGptClient(options);
 
   try {
@@ -741,8 +489,15 @@ async function runBrowserActions(options) {
     interactiveHtmlTabsOpened: 0,
     browserQueueTabsOpened: 0,
     projectConversationsRemoved: 0,
+    pendingConversationReminders: 0,
     apiRequests: 0,
   };
+  const cooldown = await activeRateLimitCooldown(options.rateLimitStatePath);
+  if (cooldown) {
+    summary.pendingConversationReminders = consumePendingRecords([]);
+    return cooldownResult(cooldown, summary);
+  }
+
   const client = new ChatGptClient(options);
   await client.initialize();
 
@@ -755,32 +510,53 @@ async function runBrowserActions(options) {
   );
   summary.discovered = candidates.length;
   const openedThisRun = new Set();
+  const pendingRecords = [];
+  if (
+    candidates.length > 0 &&
+    !candidates.some((candidate) => candidate.pendingSignal.unreadKnown)
+  ) {
+    console.warn(
+      "Warning: changed ChatGPT conversations had no recognized unread field; pending reminders cannot infer unread state.",
+    );
+  }
 
   for (const candidate of candidates) {
     const browserRecord = browserState.conversations[candidate.id] || {};
     const legacyOpenMigrationNeeded = Boolean(
       browserRecord.interactiveHtmlOpenedAt,
     );
+    const interactiveHtmlCheckNeeded = needsInteractiveHtmlCheck(
+      browserRecord,
+      candidate,
+    );
+    const pendingCheckNeeded =
+      candidate.pendingSignal.unread || candidate.pendingSignal.cutOff;
     if (
       !legacyOpenMigrationNeeded &&
-      !needsInteractiveHtmlCheck(browserRecord, candidate)
+      !interactiveHtmlCheckNeeded &&
+      !pendingCheckNeeded
     ) {
       continue;
     }
 
     let conversation = null;
     const archiveIsCurrent = isConversationCurrent(archiveState, candidate);
-    if (
+    const browserConversationNeeded =
       legacyOpenMigrationNeeded ||
-      !archiveIsCurrent ||
-      (await archiveMayContainInteractiveHtml(
-        options.outputRoot,
-        archiveState.conversations[candidate.id],
-      ))
-    ) {
+      (interactiveHtmlCheckNeeded &&
+        (!archiveIsCurrent ||
+          (await archiveMayContainInteractiveHtml(
+            options.outputRoot,
+            archiveState.conversations[candidate.id],
+          ))));
+    if (pendingCheckNeeded || browserConversationNeeded) {
       conversation = await client.fetchBackendJson(
         `/backend-api/conversation/${encodeURIComponent(candidate.id)}`,
       );
+    }
+
+    if (pendingCheckNeeded) {
+      pendingRecords.push(...pendingRecordsFromCandidate(candidate, conversation));
     }
 
     if (legacyOpenMigrationNeeded) {
@@ -793,6 +569,7 @@ async function runBrowserActions(options) {
       : null;
     const openedMessages = browserRecord.interactiveHtmlOpenedMessages || {};
     if (interactiveHtmlMessage && !openedMessages[interactiveHtmlMessage.id]) {
+      await client.waitForBrowserOpen();
       openBraveTab(
         options,
         `https://chatgpt.com/c/${encodeURIComponent(candidate.id)}`,
@@ -803,12 +580,15 @@ async function runBrowserActions(options) {
       openedThisRun.add(candidate.id);
       console.log(`Opened interactive HTML conversation: ${candidate.title}`);
     }
-    browserRecord.interactiveHtmlCheckedUpdateTimeMs = candidate.updateTimeMs;
-    browserState.conversations[candidate.id] = browserRecord;
-    summary.interactiveHtmlConversationsChecked += 1;
-    await saveState(options.browserStatePath, browserState);
+    if (legacyOpenMigrationNeeded || interactiveHtmlCheckNeeded) {
+      browserRecord.interactiveHtmlCheckedUpdateTimeMs = candidate.updateTimeMs;
+      browserState.conversations[candidate.id] = browserRecord;
+      summary.interactiveHtmlConversationsChecked += 1;
+      await saveState(options.browserStatePath, browserState);
+    }
   }
 
+  summary.pendingConversationReminders = consumePendingRecords(pendingRecords);
   const browserQueueResult = await openAndRemoveProjectConversations(
     client,
     options,
@@ -823,6 +603,58 @@ async function runBrowserActions(options) {
     await saveState(options.browserStatePath, browserState);
   }
   return { status: "success", summary };
+}
+
+function cooldownResult(cooldown, summary) {
+  console.warn(
+    `ChatGPT backend cooldown active until ${cooldown.blockedUntil}; made no requests.`,
+  );
+  return {
+    status: "cooldown",
+    summary: {
+      ...summary,
+      apiRequests: 0,
+      rateLimitedUntil: cooldown.blockedUntil,
+    },
+  };
+}
+
+function consumePendingRecords(records) {
+  const result = spawnSync(
+    "uv",
+    [
+      "run",
+      "--project",
+      MISC_ROOT,
+      "python",
+      PENDING_CONVERSATIONS_SCRIPT_PATH,
+    ],
+    {
+      input: JSON.stringify(records),
+      encoding: "utf8",
+      maxBuffer: 4 * 1024 * 1024,
+    },
+  );
+  if (result.status !== 0) {
+    const error = (result.stderr || result.stdout || "").trim();
+    throw new UserFacingError(
+      `Could not persist pending ChatGPT reminders: ${error || "unknown error"}`,
+    );
+  }
+  if (result.stderr.trim()) console.warn(result.stderr.trim());
+
+  const outputLines = result.stdout.trim().split(/\r?\n/);
+  const summaryLine =
+    outputLines.length > 0 ? outputLines.at(-1) : result.stdout.trim();
+  try {
+    const summary = JSON.parse(summaryLine);
+    if (!Number.isInteger(summary.appended)) throw new Error("missing appended count");
+    return summary.appended;
+  } catch (error) {
+    throw new UserFacingError(
+      `Pending ChatGPT reminder writer returned invalid output: ${error.message}`,
+    );
+  }
 }
 
 async function collectCandidates(
@@ -1086,6 +918,7 @@ async function openAndRemoveProjectConversations(
     const conversationUrl = `https://chatgpt.com/c/${encodeURIComponent(
       conversation.id,
     )}`;
+    await client.waitForBrowserOpen();
     openBraveTab(options, conversationUrl);
     opened += 1;
   }
@@ -1155,6 +988,7 @@ function normalizeConversationListItem(item, project) {
     createTimeMs,
     updateTimeMs,
     project,
+    pendingSignal: pendingSignalFromListItem(item),
   };
 }
 
@@ -1801,7 +1635,11 @@ async function main() {
           `Interactive HTML tabs opened: ${result.summary.interactiveHtmlTabsOpened}`,
           `Browser queue tabs opened: ${result.summary.browserQueueTabsOpened}`,
           `Removed from browser queue: ${result.summary.projectConversationsRemoved}`,
+          `Pending conversation reminders: ${result.summary.pendingConversationReminders}`,
           `API requests: ${result.summary.apiRequests}`,
+          ...(result.summary.rateLimitedUntil
+            ? [`Rate limited until: ${result.summary.rateLimitedUntil}`]
+            : []),
         ].join("\n"),
       );
       return;
@@ -1814,6 +1652,9 @@ async function main() {
         `Attachments downloaded: ${result.summary.attachmentsDownloaded}`,
         `Attachment warnings: ${result.summary.attachmentWarnings}`,
         `API requests: ${result.summary.apiRequests}`,
+        ...(result.summary.rateLimitedUntil
+          ? [`Rate limited until: ${result.summary.rateLimitedUntil}`]
+          : []),
       ].join("\n"),
     );
   }
