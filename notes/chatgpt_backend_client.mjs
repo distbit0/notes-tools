@@ -199,6 +199,23 @@ export class ChatGptClient {
     return response.json();
   }
 
+  async fetchInterpreterDownloadInfo(conversationId, messageId, sandboxPath) {
+    const query = new URLSearchParams({
+      message_id: messageId,
+      sandbox_path: sandboxPath,
+    });
+    const response = await this.fetchWithRetry(
+      `https://chatgpt.com/backend-api/conversation/${encodeURIComponent(
+        conversationId,
+      )}/interpreter/download?${query}`,
+      {
+        headers: this.backendHeaders("application/json"),
+      },
+      { authErrorIsFatal: false },
+    );
+    return response.json();
+  }
+
   async fetchDownload(downloadUrl) {
     const response = await this.fetchWithRetry(
       downloadUrl,

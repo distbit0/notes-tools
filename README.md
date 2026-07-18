@@ -12,7 +12,7 @@ The tables cover runnable entry points. The remaining Python and JavaScript file
 | --- | --- |
 | `chatgpt_pending_convos_to_notes.py` | Persists unread or interrupted ChatGPT records supplied by the incremental browser-action scan; it makes no network requests. |
 | `auth_telegram_notifs.py` | Interactively creates or refreshes the Telegram session used by the notification importer. |
-| `chatgpt_convos_to_notes.mjs` | Exports active ChatGPT conversations; its incremental `--browser-actions` mode records pending conversations, opens each new final-response interactive HTML message once, and drains the configured browser-handoff project. |
+| `chatgpt_convos_to_notes.mjs` | Exports active ChatGPT conversations; its incremental `--browser-actions` mode records pending conversations, opens each new final-response interactive HTML message and its downloaded local artifact once, and drains the configured browser-handoff project. |
 | `discord_notifs_to_notes.py` | Saves unread Discord DMs and mentions as note entries and desktop notifications. |
 | `github_notifs_to_notes.py` | Saves unread GitHub notifications to the notes inbox, then marks them read. |
 | `linear_notifs_to_notes.py` | Contains a Linear notification importer, but is currently disabled by an immediate exit. |

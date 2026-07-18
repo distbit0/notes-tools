@@ -21,6 +21,12 @@ import {
   pendingSignalFromListItem,
   UserFacingError,
 } from "./chatgpt_backend_client.mjs";
+import {
+  completeInteractiveHtmlActions,
+  completePendingInteractiveHtmlArtifacts,
+  contentContainsInteractiveHtml,
+  interactiveHtmlMessage,
+} from "./chatgpt_html_artifacts.mjs";
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = path.dirname(SCRIPT_PATH);
@@ -100,13 +106,33 @@ function loadConfiguration() {
     typeof browserQueue.openInBrowserProject !== "string" ||
     !browserQueue.openInBrowserProject.trim() ||
     typeof browserQueue.braveExecutable !== "string" ||
-    !browserQueue.braveExecutable.trim()
+    !browserQueue.braveExecutable.trim() ||
+    typeof browserQueue.interactiveHtmlDirectory !== "string" ||
+    !browserQueue.interactiveHtmlDirectory.trim()
   ) {
     throw new UserFacingError(
-      "notes/config.json must define chatgptConversationSync.openInBrowserProject and braveExecutable.",
+      "notes/config.json must define chatgptConversationSync.openInBrowserProject, braveExecutable, and interactiveHtmlDirectory.",
     );
   }
-  return browserQueue;
+  return {
+    ...browserQueue,
+    interactiveHtmlDirectory: resolveConfiguredPath(
+      browserQueue.interactiveHtmlDirectory,
+    ),
+  };
+}
+
+function resolveConfiguredPath(configuredPath) {
+  if (configuredPath === "~") return HOME_DIR;
+  if (configuredPath.startsWith("~/")) {
+    return path.join(HOME_DIR, configuredPath.slice(2));
+  }
+  if (configuredPath.startsWith("~")) {
+    throw new UserFacingError(
+      `Unsupported home-relative path: ${configuredPath}`,
+    );
+  }
+  return path.resolve(configuredPath);
 }
 
 function parseArgs(argv, browserQueue = loadConfiguration()) {
@@ -129,6 +155,7 @@ function parseArgs(argv, browserQueue = loadConfiguration()) {
     bearer: process.env.CHATGPT_BEARER_TOKEN || "",
     openInBrowserProject: browserQueue.openInBrowserProject,
     braveExecutable: browserQueue.braveExecutable,
+    interactiveHtmlDirectory: browserQueue.interactiveHtmlDirectory,
     projectRoot: MISC_ROOT,
   };
 
@@ -233,7 +260,7 @@ function defaultBrowserActionState(archiveState) {
     };
   }
   return {
-    version: 3,
+    version: 4,
     conversations,
     scanWatermarks: { normal: null, projects: {} },
   };
@@ -269,7 +296,7 @@ async function loadBrowserActionState(browserStatePath, archiveState) {
 
   const state = JSON.parse(await readFile(browserStatePath, "utf8"));
   return {
-    version: 3,
+    version: 4,
     conversations:
       state.conversations && typeof state.conversations === "object"
         ? state.conversations
@@ -487,6 +514,8 @@ async function runBrowserActions(options) {
     discovered: 0,
     interactiveHtmlConversationsChecked: 0,
     interactiveHtmlTabsOpened: 0,
+    interactiveHtmlArtifactsDownloaded: 0,
+    interactiveHtmlArtifactTabsOpened: 0,
     browserQueueTabsOpened: 0,
     projectConversationsRemoved: 0,
     pendingConversationReminders: 0,
@@ -500,6 +529,15 @@ async function runBrowserActions(options) {
 
   const client = new ChatGptClient(options);
   await client.initialize();
+  await completePendingInteractiveHtmlArtifacts({
+    client,
+    options,
+    browserState,
+    archiveState,
+    summary,
+    saveState,
+    openBraveTab,
+  });
 
   const projects = await fetchProjects(client);
   const { candidates, scanWatermarks } = await collectCandidates(
@@ -567,18 +605,22 @@ async function runBrowserActions(options) {
     const interactiveHtmlMessage = conversation
       ? lastAssistantInteractiveHtmlMessage(conversation)
       : null;
-    const openedMessages = browserRecord.interactiveHtmlOpenedMessages || {};
-    if (interactiveHtmlMessage && !openedMessages[interactiveHtmlMessage.id]) {
-      await client.waitForBrowserOpen();
-      openBraveTab(
+    if (interactiveHtmlMessage) {
+      const result = await completeInteractiveHtmlActions({
+        client,
         options,
-        `https://chatgpt.com/c/${encodeURIComponent(candidate.id)}`,
-      );
-      openedMessages[interactiveHtmlMessage.id] = new Date().toISOString();
-      browserRecord.interactiveHtmlOpenedMessages = openedMessages;
-      summary.interactiveHtmlTabsOpened += 1;
-      openedThisRun.add(candidate.id);
-      console.log(`Opened interactive HTML conversation: ${candidate.title}`);
+        browserState,
+        browserRecord,
+        conversationId: candidate.id,
+        conversationTitle: candidate.title,
+        message: interactiveHtmlMessage,
+        summary,
+        saveState,
+        openBraveTab,
+      });
+      if (result.conversationOpened) {
+        openedThisRun.add(candidate.id);
+      }
     }
     if (legacyOpenMigrationNeeded || interactiveHtmlCheckNeeded) {
       browserRecord.interactiveHtmlCheckedUpdateTimeMs = candidate.updateTimeMs;
@@ -1025,16 +1067,12 @@ async function archiveMayContainInteractiveHtml(outputRoot, record) {
 
 function lastAssistantInteractiveHtmlMessage(conversation) {
   const latestAssistantMessage = visibleAssistantMessages(conversation).at(-1);
-  if (
-    !latestAssistantMessage ||
-    !contentContainsInteractiveHtml(latestAssistantMessage.message.content)
-  ) {
-    return null;
-  }
-  return {
-    id: latestAssistantMessage.id,
-    createdAtMs: timestampToMs(latestAssistantMessage.message.create_time),
-  };
+  return latestAssistantMessage
+    ? interactiveHtmlMessage(
+        latestAssistantMessage.id,
+        latestAssistantMessage.message,
+      )
+    : null;
 }
 
 function visibleAssistantMessages(conversation) {
@@ -1080,23 +1118,6 @@ function migrateLegacyInteractiveHtmlOpen(record, conversation) {
     [previouslyOpenedMessage.id]: record.interactiveHtmlOpenedAt,
   };
   delete record.interactiveHtmlOpenedAt;
-}
-
-function contentContainsInteractiveHtml(value, fieldName = "") {
-  if (typeof value === "string") {
-    return (
-      INTERACTIVE_HTML_LINK_PATTERN.test(value) ||
-      ((fieldName === "content_type" || fieldName === "mime_type") &&
-        value.toLowerCase() === "text/html")
-    );
-  }
-  if (Array.isArray(value)) {
-    return value.some((item) => contentContainsInteractiveHtml(item));
-  }
-  if (!value || typeof value !== "object") return false;
-  return Object.entries(value).some(([key, item]) =>
-    contentContainsInteractiveHtml(item, key),
-  );
 }
 
 async function exportConversation(
@@ -1633,6 +1654,8 @@ async function main() {
           `Discovered: ${result.summary.discovered}`,
           `Interactive HTML conversations checked: ${result.summary.interactiveHtmlConversationsChecked}`,
           `Interactive HTML tabs opened: ${result.summary.interactiveHtmlTabsOpened}`,
+          `Interactive HTML artifacts downloaded: ${result.summary.interactiveHtmlArtifactsDownloaded}`,
+          `Interactive HTML artifact tabs opened: ${result.summary.interactiveHtmlArtifactTabsOpened}`,
           `Browser queue tabs opened: ${result.summary.browserQueueTabsOpened}`,
           `Removed from browser queue: ${result.summary.projectConversationsRemoved}`,
           `Pending conversation reminders: ${result.summary.pendingConversationReminders}`,

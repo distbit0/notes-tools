@@ -87,6 +87,19 @@ test("live browser actions run through their independent ledger", async (t) => {
     Object.keys(interactiveRecord.interactiveHtmlOpenedMessages).length >= 1,
     true,
   );
+  for (const messageId of Object.keys(
+    interactiveRecord.interactiveHtmlOpenedMessages,
+  )) {
+    const artifactRecords =
+      interactiveRecord.interactiveHtmlArtifacts[messageId];
+    assert.equal(Object.keys(artifactRecords).length >= 1, true);
+    for (const artifactRecord of Object.values(artifactRecords)) {
+      assert.equal(typeof artifactRecord.downloadedAt, "string");
+      assert.equal(typeof artifactRecord.openedAt, "string");
+      const html = await readFile(artifactRecord.localPath, "utf8");
+      assert.match(html, /<!doctype\s+html|<html\b/i);
+    }
+  }
   assert.equal("interactiveHtmlOpenedAt" in interactiveRecord, false);
 });
 
@@ -111,6 +124,16 @@ test("live detector requires interactive HTML in the latest assistant message", 
   assert.notEqual(interactiveMessage, null);
   assert.equal(typeof interactiveMessage.id, "string");
   assert.equal(interactiveMessage.createdAtMs > 0, true);
+  assert.equal(interactiveMessage.artifacts.length >= 1, true);
+  assert.equal(
+    interactiveMessage.artifacts.every(
+      (artifact) =>
+        artifact.sourceType === "sandbox" &&
+        artifact.sandboxPath.startsWith("/mnt/data/") &&
+        artifact.sandboxPath.endsWith(".html"),
+    ),
+    true,
+  );
   assert.equal(
     lastAssistantInteractiveHtmlMessage(earlierHtmlOnlyConversation),
     null,

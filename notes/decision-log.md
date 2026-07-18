@@ -11,6 +11,7 @@
 
 - A dedicated `--browser-actions` mode runs independently of the 03:00/15:00 archive export and its run gate.
 - It opens a conversation in Brave when the latest visible assistant message contains generated sandbox HTML or direct `text/html`, recording the assistant message ID in a separate browser-actions ledger. Each new matching assistant response opens once, including later visualizations in a conversation that opened previously.
+- Each matching message's HTML artifacts are saved under the configured `~/Downloads/chatgpt-html` directory and opened as local Brave tabs. Conversation-open, artifact-download, and artifact-open completion are persisted separately so retries resume only unfinished actions; unchanged runs make no artifact requests.
 - It also drains the configured `open_in_browser` project: each chat opens as a new Brave tab and is then removed from the project. The project remains the retry ledger if opening or removal fails.
 - Current archive Markdown rules out clear non-matches locally; possible matches and new or changed conversations are verified from the live conversation response.
 - Browser discovery reuses conversations embedded in the project sidebar and persists separate normal/project update watermarks. Watermarks advance only after an unrestricted successful run, so steady-state polling reads only the session, sidebar pages, and first normal-conversation page without risking gaps after partial or failed runs.

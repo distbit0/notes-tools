@@ -5,7 +5,8 @@
   "routeSectionHeading": "Routed discussion ideas",
   "chatgptConversationSync": {
     "openInBrowserProject": "open_in_browser",
-    "braveExecutable": "/usr/bin/brave-browser"
+    "braveExecutable": "/usr/bin/brave-browser",
+    "interactiveHtmlDirectory": "~/Downloads/chatgpt-html"
   },
   "openRouter": {
     "responsesUrl": "https://openrouter.ai/api/v1/responses",
