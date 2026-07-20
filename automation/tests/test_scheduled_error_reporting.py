@@ -150,17 +150,27 @@ def test_runner_fallback_uses_only_redacted_status_metadata() -> None:
 
 
 def test_runner_logs_an_actual_codex_process_failure(tmp_path: Path) -> None:
+    executable_directory = tmp_path / "bin"
+    executable_directory.mkdir()
+    error_preflight = executable_directory / "error_log_has_new_records"
+    error_preflight.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    error_preflight.chmod(0o700)
     error_log = tmp_path / "error_log.txt"
     state_home = tmp_path / "state"
     environment = os.environ | {
         "CODEX_BIN": "/usr/bin/false",
         "DESKTOP_ERROR_LOGGER": str(ERROR_LOGGER),
         "DESKTOP_ERROR_LOG_PATH": str(error_log),
+        "PATH": f"{executable_directory}:{os.environ['PATH']}",
+        "SCHEDULED_CODEX_LOG_DIR": str(tmp_path / "logs"),
+        "SCHEDULED_CODEX_NOTES_AUTO_COMMIT_LOCK": str(
+            tmp_path / "git_auto_commit.lock"
+        ),
         "XDG_STATE_HOME": str(state_home),
     }
 
     result = subprocess.run(
-        [str(SCHEDULER), "scheduled-jobs", "0700"],
+        [str(SCHEDULER), "scheduled-jobs", "0600"],
         cwd=REPO_ROOT,
         env=environment,
         text=True,
@@ -171,7 +181,7 @@ def test_runner_logs_an_actual_codex_process_failure(tmp_path: Path) -> None:
     assert result.returncode == 1
     log_text = error_log.read_text(encoding="utf-8")
     assert log_text.count("--- desktop-error ") == 1
-    assert "source: scheduled-goal-advancement" in log_text
+    assert "source: scheduled-fix-logged-errors" in log_text
     assert "exit_status=1" in log_text
     assert "job_log=" in log_text
     assert stat.S_IMODE(error_log.stat().st_mode) == 0o600

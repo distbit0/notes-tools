@@ -6,12 +6,11 @@
 - Decision: run `scheduled-resolve-contradictions` every six days at 04:00 on phase 1 as an unattended `exec` session, and disable the separate `scheduled-note-critique` detector. The resolver's phase is disjoint from the three-day tweet job and the other six-day 04:00 job.
 - Purpose: use contradictions to find consequential errors in prior thinking, derive novel or useful implications, and propose improvements rather than merely reconcile incompatible statements.
 
-## Daily goal advancement scheduling
+## Goal advancement scheduling
 
-- Date: 2026-07-14
-- Decision: run `scheduled-goal-advancement` every day at 07:00 through the existing scheduled-job wrapper, using an `exec` session and a dedicated `daily-goal-advancement` Codex profile.
-- Rationale: isolate its maximum reasoning and broad local implementation work from the defaults used by other scheduled skills, while keeping the run out of interactive session history.
-- Safety: the profile uses a named permission policy that writes only under `/home/pimania` and temporary directories, denies credential stores, and enables unattended approvals without the wrapper's full-access bypass. It permits SSH clients and Git to authenticate with existing identities under `~/.ssh`, while forbidding agents from inspecting, copying, modifying, or exposing private-key material. The skill forbids messaging, spending, high-consequence actions, and obvious public association with the user.
+- Date: 2026-07-20
+- Decision: pause automatic `scheduled-goal-advancement` runs by leaving it out of the recurring scheduled-job registry and disabling the now-unused 07:00 user timer.
+- Scope: keep the skill and its dedicated `daily-goal-advancement` Codex profile available for manual use or a future explicit reactivation.
 
 ## Behavior-aware hard feedback scheduling
 

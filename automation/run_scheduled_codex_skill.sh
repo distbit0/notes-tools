@@ -16,7 +16,6 @@ readonly NOTES_AUTO_COMMIT_LOCK="${SCHEDULED_CODEX_NOTES_AUTO_COMMIT_LOCK:-${NOT
 readonly CATCHUP_GRACE_SECONDS=600
 
 scheduled_codex_jobs() {
-  scheduled_codex_job "scheduled-goal-advancement" "scheduled-goal-advancement" "exec" "07:00" "" "daily-goal-advancement"
   scheduled_codex_job_every_n_days "scheduled-tweet-ideas" "scheduled-tweet-ideas" "exec" "04:00" 3 2
   scheduled_codex_job_every_n_days "scheduled-resolve-contradictions" "scheduled-resolve-contradictions" "exec" "04:00" 6 1
   scheduled_codex_job_every_n_days "scheduled-idea-space-search" "scheduled-idea-space-search" "exec" "05:00" 5 1

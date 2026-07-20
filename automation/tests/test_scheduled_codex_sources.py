@@ -13,6 +13,27 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEDULER = REPO_ROOT / "automation/run_scheduled_codex_skill.sh"
 
 
+def install_successful_error_preflight(executable_directory: Path) -> None:
+    error_preflight = executable_directory / "error_log_has_new_records"
+    error_preflight.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    error_preflight.chmod(0o700)
+
+
+def scheduled_error_job_environment(tmp_path: Path) -> dict[str, str]:
+    executable_directory = tmp_path / "bin"
+    executable_directory.mkdir()
+    install_successful_error_preflight(executable_directory)
+    return os.environ | {
+        "CODEX_BIN": "/usr/bin/true",
+        "PATH": f"{executable_directory}:{os.environ['PATH']}",
+        "SCHEDULED_CODEX_LOG_DIR": str(tmp_path / "logs"),
+        "SCHEDULED_CODEX_NOTES_AUTO_COMMIT_LOCK": str(
+            tmp_path / "git_auto_commit.lock"
+        ),
+        "XDG_STATE_HOME": str(tmp_path / "state"),
+    }
+
+
 def scheduled_every_n_day_jobs() -> dict[str, tuple[str, int, int]]:
     scheduler_text = SCHEDULER.read_text(encoding="utf-8")
     return {
@@ -51,9 +72,7 @@ def test_scheduled_codex_job_cadences_are_spread_out() -> None:
     daily_schedule = scheduled_daily_jobs()
 
     assert actual_schedule == expected_schedule
-    assert daily_schedule == {
-        "scheduled-goal-advancement": ("07:00", "daily-goal-advancement"),
-    }
+    assert daily_schedule == {}
 
     schedule_period = lcm(*(period_days for _schedule_time, period_days, _phase in actual_schedule.values()))
     for epoch_day in range(schedule_period):
@@ -77,7 +96,6 @@ def test_unattended_scheduled_jobs_do_not_relabel_as_cli() -> None:
         "scheduled-answer-open-questions",
         "scheduled-security-audit",
         "scheduled-distill-assistant-chats",
-        "scheduled-goal-advancement",
         "scheduled-infolio-relevance",
         "scheduled-draft-message-replies",
     }
@@ -133,25 +151,14 @@ def test_infolio_selection_is_passed_to_codex_after_cadence_check() -> None:
     assert "Selection JSON:" in scheduler_text
 
 
-def test_goal_advancement_uses_a_profile_instead_of_full_access() -> None:
+def test_goal_advancement_is_not_automatically_scheduled() -> None:
     scheduler_text = SCHEDULER.read_text(encoding="utf-8")
-    run_job = scheduler_text[
-        scheduler_text.index("run_and_record_codex_job()"):
-        scheduler_text.index("\nvalidate_job_config()")
+    scheduled_jobs = scheduler_text[
+        scheduler_text.index("scheduled_codex_jobs()"):
+        scheduler_text.index("\nscheduled_message_reply_jobs()")
     ]
 
-    assert (
-        'scheduled_codex_job "scheduled-goal-advancement" '
-        '"scheduled-goal-advancement" "exec" "07:00" "" "daily-goal-advancement"'
-        in scheduler_text
-    )
-    assert 'codex_command+=(--profile "$profile_name")' in run_job
-    assert 'codex_command+=(--dangerously-bypass-approvals-and-sandbox)' in run_job
-    assert "Codex stderr:" in run_job
-    assert 'cat "$run_output_file"' in run_job
-    assert run_job.index('if [[ -n "$profile_name" ]]') < run_job.index(
-        'codex_command+=(--dangerously-bypass-approvals-and-sandbox)'
-    )
+    assert "scheduled-goal-advancement" not in scheduled_jobs
 
 
 def test_scheduler_holds_notes_auto_commit_lock_for_entire_run() -> None:
@@ -181,22 +188,17 @@ def test_scheduler_holds_notes_auto_commit_lock_for_entire_run() -> None:
     assert "exec 7>&-" not in top_level
 
 
-def test_goal_advancement_waits_for_notes_auto_commit_lock(tmp_path: Path) -> None:
+def test_scheduled_jobs_wait_for_notes_auto_commit_lock(tmp_path: Path) -> None:
     lock_path = tmp_path / "git_auto_commit.lock"
     stderr_path = tmp_path / "scheduler.stderr"
-    environment = os.environ | {
-        "CODEX_BIN": "/usr/bin/true",
-        "SCHEDULED_CODEX_LOG_DIR": str(tmp_path / "logs"),
-        "SCHEDULED_CODEX_NOTES_AUTO_COMMIT_LOCK": str(lock_path),
-        "XDG_STATE_HOME": str(tmp_path / "state"),
-    }
+    environment = scheduled_error_job_environment(tmp_path)
 
     with lock_path.open("w", encoding="utf-8") as lock_file, stderr_path.open(
         "w", encoding="utf-8"
     ) as stderr_file:
         fcntl.flock(lock_file, fcntl.LOCK_EX)
         scheduler = subprocess.Popen(
-            [str(SCHEDULER), "--override", "scheduled-jobs", "0700"],
+            [str(SCHEDULER), "--override", "scheduled-jobs", "0600"],
             cwd=REPO_ROOT,
             env=environment,
             text=True,
@@ -228,19 +230,17 @@ def test_goal_advancement_waits_for_notes_auto_commit_lock(tmp_path: Path) -> No
                 pass
             else:
                 fcntl.flock(global_lock_file, fcntl.LOCK_UN)
-                raise AssertionError(
-                    "goal advancement released the global scheduler lock"
-                )
+                raise AssertionError("scheduled job released the global scheduler lock")
         fcntl.flock(lock_file, fcntl.LOCK_UN)
 
     stdout, _stderr = scheduler.communicate(timeout=10)
     assert scheduler.returncode == 0
-    assert "scheduled Codex job: scheduled-goal-advancement status=0" in stdout
+    assert "scheduled Codex job: scheduled-fix-logged-errors status=0" in stdout
 
 
-def test_global_scheduler_lock_remains_held_after_goal_job(tmp_path: Path) -> None:
+def test_global_scheduler_lock_remains_held_after_job(tmp_path: Path) -> None:
+    environment = scheduled_error_job_environment(tmp_path)
     executable_directory = tmp_path / "bin"
-    executable_directory.mkdir()
     tee_started_path = tmp_path / "tee-started"
     tee_release_path = tmp_path / "tee-release"
     tee_script = executable_directory / "tee"
@@ -256,21 +256,14 @@ exec /usr/bin/tee "$@"
     )
     tee_script.chmod(0o700)
 
-    environment = os.environ | {
-        "CODEX_BIN": "/usr/bin/true",
-        "PATH": f"{executable_directory}:{os.environ['PATH']}",
-        "SCHEDULED_CODEX_LOG_DIR": str(tmp_path / "logs"),
-        "SCHEDULED_CODEX_NOTES_AUTO_COMMIT_LOCK": str(
-            tmp_path / "git_auto_commit.lock"
-        ),
+    environment |= {
         "TEST_TEE_RELEASE": str(tee_release_path),
         "TEST_TEE_STARTED": str(tee_started_path),
-        "XDG_STATE_HOME": str(tmp_path / "state"),
     }
 
     def start_scheduler() -> subprocess.Popen[str]:
         return subprocess.Popen(
-            [str(SCHEDULER), "--override", "scheduled-jobs", "0700"],
+            [str(SCHEDULER), "--override", "scheduled-jobs", "0600"],
             cwd=REPO_ROOT,
             env=environment,
             text=True,
@@ -287,7 +280,7 @@ exec /usr/bin/tee "$@"
     else:
         first_scheduler.terminate()
         first_scheduler.wait(timeout=5)
-        raise AssertionError("first scheduler did not finish the goal job")
+        raise AssertionError("first scheduler did not finish the scheduled job")
 
     second_scheduler = start_scheduler()
     time.sleep(0.1)
@@ -299,18 +292,16 @@ exec /usr/bin/tee "$@"
 
     assert first_scheduler.returncode == 0, first_stderr
     assert second_scheduler.returncode == 0, second_stderr
-    assert "scheduled Codex job: scheduled-goal-advancement status=0" in first_stdout
-    assert "scheduled Codex job: scheduled-goal-advancement status=0" in second_stdout
+    expected_output = "scheduled Codex job: scheduled-fix-logged-errors status=0"
+    assert expected_output in first_stdout
+    assert expected_output in second_stdout
     assert tee_started_path.read_text(encoding="utf-8").count("\n") == 2
 
 
 def test_override_runs_a_scheduled_job_again_after_its_catchup_was_claimed(
     tmp_path: Path,
 ) -> None:
-    environment = os.environ | {
-        "CODEX_BIN": "/usr/bin/true",
-        "XDG_STATE_HOME": str(tmp_path / "state"),
-    }
+    environment = scheduled_error_job_environment(tmp_path)
 
     def run_scheduler(*arguments: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -322,14 +313,15 @@ def test_override_runs_a_scheduled_job_again_after_its_catchup_was_claimed(
             check=False,
         )
 
-    first_run = run_scheduler("scheduled-jobs", "0700")
-    repeated_run = run_scheduler("scheduled-jobs", "0700")
-    override_run = run_scheduler("--override", "scheduled-jobs", "0700")
+    first_run = run_scheduler("scheduled-jobs", "0600")
+    repeated_run = run_scheduler("scheduled-jobs", "0600")
+    override_run = run_scheduler("--override", "scheduled-jobs", "0600")
 
+    expected_output = "scheduled Codex job: scheduled-fix-logged-errors status=0"
     assert first_run.returncode == 0
-    assert "scheduled Codex job: scheduled-goal-advancement status=0" in first_run.stdout
+    assert expected_output in first_run.stdout
     assert repeated_run.returncode == 0
     assert "catch-up already ran" in repeated_run.stdout
     assert override_run.returncode == 0
-    assert "scheduled Codex job: scheduled-goal-advancement status=0" in override_run.stdout
+    assert expected_output in override_run.stdout
     assert "catch-up already ran" not in override_run.stdout
