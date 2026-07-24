@@ -17,6 +17,11 @@ FOLLOW_UP_HABIT_NAME = PRIVATE_TEST_DATA["followUpHabitName"]
 CUSTOM_AUDIO_FILE = PRIVATE_TEST_DATA["customAudioFile"]
 CUSTOM_AUDIO_HABIT_ID = PRIVATE_TEST_DATA["customAudioHabitId"]
 CUSTOM_AUDIO_HABIT_NAME = PRIVATE_TEST_DATA["customAudioHabitName"]
+BLUETOOTH_CONFIG = json.loads(
+    Path("/home/pimania/dev/misc/connectivity/config.json").read_text(encoding="utf-8")
+)
+HEADPHONES_MAC = BLUETOOTH_CONFIG["headphonesMac"]
+NORMALIZED_HEADPHONES_MAC = HEADPHONES_MAC.replace(":", "_")
 
 from src.main import (
     DUE_OUTPUT_TEXT_TO_SPEECH,
@@ -431,13 +436,13 @@ def test_persistent_desktop_notifications_use_notify_send(monkeypatch):
 
 
 def test_bluetooth_sink_detection_uses_wpctl_metadata():
-    bluetooth_sink_output = """
+    bluetooth_sink_output = f"""
 id 223, type PipeWire:Interface:Node
-    api.bluez5.address = "90:BF:D9:5D:41:D0"
+    api.bluez5.address = "{HEADPHONES_MAC}"
     device.api = "bluez5"
   * media.class = "Audio/Sink"
-  * node.description = "soundcore Space Q45"
-  * node.name = "bluez_output.90_BF_D9_5D_41_D0.1"
+  * node.description = "WH-1000XM6"
+  * node.name = "bluez_output.{NORMALIZED_HEADPHONES_MAC}.1"
 """
     internal_speaker_output = """
 id 90, type PipeWire:Interface:Node
@@ -454,9 +459,9 @@ id 90, type PipeWire:Interface:Node
 
 
 def test_bluetooth_sink_address_is_read_from_wpctl_metadata():
-    bluetooth_sink_output = """
+    bluetooth_sink_output = f"""
 id 196, type PipeWire:Interface:Node
-    api.bluez5.address = "90:BF:D9:5D:41:D0"
+    api.bluez5.address = "{HEADPHONES_MAC}"
     api.bluez5.codec = "sbc_xq"
     api.bluez5.profile = "a2dp-sink"
     api.bluez5.transport = ""
@@ -470,11 +475,11 @@ id 196, type PipeWire:Interface:Node
     factory.name = "api.bluez5.a2dp.sink"
     library.name = "audioconvert/libspa-audioconvert"
   * media.class = "Audio/Sink"
-    media.name = "soundcore Space Q45"
-  * node.description = "soundcore Space Q45"
+    media.name = "WH-1000XM6"
+  * node.description = "WH-1000XM6"
     node.driver = "true"
     node.loop.name = "data-loop.0"
-  * node.name = "bluez_output.90_BF_D9_5D_41_D0.1"
+  * node.name = "bluez_output.{NORMALIZED_HEADPHONES_MAC}.1"
     node.pause-on-idle = "false"
   * object.serial = "211"
     port.group = "stream.0"
@@ -482,25 +487,25 @@ id 196, type PipeWire:Interface:Node
   * priority.session = "1010"
     spa.object.id = "1"
 """
-    bluetooth_sink_output_without_address = """
+    bluetooth_sink_output_without_address = f"""
 id 196, type PipeWire:Interface:Node
-  * node.name = "bluez_output.90_BF_D9_5D_41_D0.1"
+  * node.name = "bluez_output.{NORMALIZED_HEADPHONES_MAC}.1"
 """
 
     assert (
         get_bluetooth_address_from_audio_sink_metadata(bluetooth_sink_output)
-        == "90:BF:D9:5D:41:D0"
+        == HEADPHONES_MAC
     )
     assert (
         get_bluetooth_address_from_audio_sink_metadata(
             bluetooth_sink_output_without_address
         )
-        == "90:BF:D9:5D:41:D0"
+        == HEADPHONES_MAC
     )
 
 
 def test_bluez_media_transport_paths_are_matched_by_device_address(monkeypatch):
-    busctl_tree_output = """
+    busctl_tree_output = f"""
 /
 /org
 /org/bluez
@@ -511,10 +516,10 @@ def test_bluez_media_transport_paths_are_matched_by_device_address(monkeypatch):
 /org/bluez/hci0/dev_54_F2_9F_9F_AD_A7
 /org/bluez/hci0/dev_54_F2_9F_9F_E1_C2
 /org/bluez/hci0/dev_5D_D6_D9_09_AF_AE
-/org/bluez/hci0/dev_90_BF_D9_5D_41_D0
-/org/bluez/hci0/dev_90_BF_D9_5D_41_D0/sep1
-/org/bluez/hci0/dev_90_BF_D9_5D_41_D0/sep1/fd0
-/org/bluez/hci0/dev_90_BF_D9_5D_41_D0/sep2
+/org/bluez/hci0/dev_{NORMALIZED_HEADPHONES_MAC}
+/org/bluez/hci0/dev_{NORMALIZED_HEADPHONES_MAC}/sep1
+/org/bluez/hci0/dev_{NORMALIZED_HEADPHONES_MAC}/sep1/fd0
+/org/bluez/hci0/dev_{NORMALIZED_HEADPHONES_MAC}/sep2
 /org/bluez/hci0/dev_90_F2_60_BD_B7_3D
 /org/bluez/hci0/dev_A0_D3_65_04_20_A3
 """
@@ -525,8 +530,8 @@ def test_bluez_media_transport_paths_are_matched_by_device_address(monkeypatch):
 
     monkeypatch.setattr("src.main.subprocess.run", fake_run)
 
-    assert get_bluez_media_transport_paths("90:BF:D9:5D:41:D0") == [
-        "/org/bluez/hci0/dev_90_BF_D9_5D_41_D0/sep1/fd0"
+    assert get_bluez_media_transport_paths(HEADPHONES_MAC) == [
+        f"/org/bluez/hci0/dev_{NORMALIZED_HEADPHONES_MAC}/sep1/fd0"
     ]
 
 
