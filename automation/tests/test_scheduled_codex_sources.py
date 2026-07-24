@@ -161,18 +161,6 @@ def test_goal_advancement_is_not_automatically_scheduled() -> None:
     assert "scheduled-goal-advancement" not in scheduled_jobs
 
 
-def test_message_pulls_exclude_discord_without_disabling_other_sources() -> None:
-    scheduler_text = SCHEDULER.read_text(encoding="utf-8")
-    message_pull_sources = scheduler_text[
-        scheduler_text.index("message_pull_scripts()"):
-        scheduler_text.index("\nrun_message_pull_script()")
-    ]
-
-    assert '"discord"' not in message_pull_sources
-    for source in ("github", "linear", "telegram", "social"):
-        assert f'"{source}"' in message_pull_sources
-
-
 def test_scheduler_holds_notes_auto_commit_lock_for_entire_run() -> None:
     scheduler_text = SCHEDULER.read_text(encoding="utf-8")
     run_job = scheduler_text[

@@ -297,6 +297,7 @@ message_pull_scripts() {
   printf '%s\t%s\n' "github" "notes/github_notifs_to_notes.py"
   printf '%s\t%s\n' "linear" "notes/linear_notifs_to_notes.py"
   printf '%s\t%s\n' "telegram" "notes/telegram_notifs_to_notes.py"
+  printf '%s\t%s\n' "discord" "notes/discord_notifs_to_notes.py"
   printf '%s\t%s\n' "social" "notes/social_notifs_to_notes.py"
 }
 
