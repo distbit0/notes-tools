@@ -34,9 +34,13 @@
 
 ## Message capture preserves upstream state
 
-- Telegram, Discord, and social importers use local cursors for deduplication and do not mutate Telegram unread state. Upstream read markers remain evidence for whether a newly seen message deserves a notification.
+- Telegram and social importers use local cursors for deduplication and do not mutate Telegram unread state. Upstream read markers remain evidence for whether a newly seen message deserves a notification.
 - Desktop notification delivery and Markdown persistence complete before cursors advance or GitHub threads are marked read, so a local failure remains retryable rather than losing the alert.
 - Literal top-level `msg - *.md` filenames are a deliberate reply-workflow interface. Filename normalization preserves them, and cleanup considers them live only when linked by a non-message note.
+
+## Discord notification capture is disabled
+
+- Do not schedule Discord message pulls or restore browser-token extraction, token validation, gateway connections, DM history fetches, or mention fetches. The retained entry point fails explicitly without network access.
 
 ## ChatGPT archive is an append-only message ledger
 
