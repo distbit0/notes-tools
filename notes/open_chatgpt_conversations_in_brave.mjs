@@ -65,8 +65,8 @@ Options:
                              (default: ${DEFAULT_SCAN_STATE_PATH})
   --output <file>            Text file receiving conversation URLs
                              (default: ${DEFAULT_OUTPUT_PATH})
-  --include-titles <file>    Also include conversations whose exact titles are
-                             listed in this file; every title must match once.
+  --include-titles <file>    Also include conversations identified by exact
+                             titles or ChatGPT URLs in this file.
                              An existing ${DEFAULT_RECOVERY_TITLES_PATH}
                              is used automatically for an unfinished full scan.
   --profile <name>           Brave profile name (default: ${DEFAULT_BRAVE_PROFILE})
@@ -204,9 +204,9 @@ async function openChatGptConversations(options) {
   );
   summary.discovered = candidates.length;
   const recoveredConversationIds = includeTitlesPath
-    ? resolveConversationTitles(
+    ? resolveConversationReferences(
         candidates,
-        await readTitleList(includeTitlesPath),
+        await readRecoveryList(includeTitlesPath),
       )
     : new Set();
   summary.recoveredUrls = recoveredConversationIds.size;
@@ -264,25 +264,32 @@ async function openChatGptConversations(options) {
   return { status: "success", summary };
 }
 
-async function readTitleList(titleListPath) {
-  if (!existsSync(titleListPath)) {
-    throw new UserFacingError(`Conversation title list not found: ${titleListPath}`);
-  }
-  const titles = (await readFile(titleListPath, "utf8"))
-    .split(/\r?\n/)
-    .filter(Boolean);
-  if (titles.length === 0) {
-    throw new UserFacingError(`Conversation title list is empty: ${titleListPath}`);
-  }
-  if (new Set(titles).size !== titles.length) {
+async function readRecoveryList(recoveryListPath) {
+  if (!existsSync(recoveryListPath)) {
     throw new UserFacingError(
-      `Conversation title list contains duplicate titles: ${titleListPath}`,
+      `Conversation recovery list not found: ${recoveryListPath}`,
     );
   }
-  return titles;
+  const references = (await readFile(recoveryListPath, "utf8"))
+    .split(/\r?\n/)
+    .filter(Boolean);
+  if (references.length === 0) {
+    throw new UserFacingError(
+      `Conversation recovery list is empty: ${recoveryListPath}`,
+    );
+  }
+  if (new Set(references).size !== references.length) {
+    throw new UserFacingError(
+      `Conversation recovery list contains duplicate entries: ${recoveryListPath}`,
+    );
+  }
+  return references;
 }
 
-function resolveConversationTitles(candidates, titles) {
+function resolveConversationReferences(candidates, references) {
+  const candidatesById = new Map(
+    candidates.map((candidate) => [candidate.id, candidate]),
+  );
   const candidatesByTitle = new Map();
   for (const candidate of candidates) {
     const matches = candidatesByTitle.get(candidate.title) || [];
@@ -291,12 +298,23 @@ function resolveConversationTitles(candidates, titles) {
   }
 
   const resolvedIds = new Set();
-  for (const title of titles) {
-    const matches = candidatesByTitle.get(title) || [];
+  for (const reference of references) {
+    const conversationId = conversationIdFromUrl(reference);
+    if (conversationId) {
+      if (!candidatesById.has(conversationId)) {
+        throw new UserFacingError(
+          `Recovered URL does not identify an active conversation: ${reference}`,
+        );
+      }
+      resolvedIds.add(conversationId);
+      continue;
+    }
+
+    const matches = candidatesByTitle.get(reference) || [];
     if (matches.length !== 1) {
       throw new UserFacingError(
         `Recovered title must match exactly one active conversation; ` +
-          `${JSON.stringify(title)} matched ${matches.length}.`,
+          `${JSON.stringify(reference)} matched ${matches.length}.`,
       );
     }
     resolvedIds.add(matches[0].id);
@@ -559,6 +577,6 @@ export {
   parseArgs,
   queryConversationHistory,
   readBraveConversationHistory,
-  resolveConversationTitles,
+  resolveConversationReferences,
   shouldOpenConversation,
 };
