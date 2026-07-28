@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
-from notes_utils import append_markdown_lines, format_notification_note_line
+from notes_utils import ensure_terminal_safe_markdown_path, format_notification_note_line
 
 
 THREAD_MARKER_RE = re.compile(
@@ -18,6 +18,7 @@ THREAD_MARKER_RE = re.compile(
     r'conversation_id="(?P<conversation_id>[^"]+)" -->'
 )
 WIKILINK_RE = re.compile(r"\[\[([^\]\n]+)\]\]")
+NOTIFICATION_LINE_RE = re.compile(r"\s*(?:[-*+]\s+)?new notif: ")
 CHANGED_MESSAGE_NOTES_FILE_ENV = "MESSAGE_NOTIF_CHANGED_NOTES_FILE"
 
 
@@ -266,6 +267,39 @@ def notification_line(entry: MessageLogEntry, note_title: str) -> str:
     return f"{preview_line} {wikilink(note_title)}"
 
 
+def replace_conversation_notifications(
+    path: Path, inbox_lines_by_note_title: dict[str, str]
+) -> None:
+    if not inbox_lines_by_note_title:
+        return
+    ensure_terminal_safe_markdown_path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Notes file not found: {path}")
+
+    replaced_note_titles = inbox_lines_by_note_title.keys()
+    retained_lines = [
+        line
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if not (
+            NOTIFICATION_LINE_RE.match(line)
+            and any(
+                wikilink_target(match.group(1)) in replaced_note_titles
+                for match in WIKILINK_RE.finditer(line)
+            )
+        )
+    ]
+    while retained_lines and not retained_lines[-1].strip():
+        retained_lines.pop()
+
+    updated_text = (
+        "\n".join(retained_lines)
+        + "\n\n"
+        + "\n".join(inbox_lines_by_note_title.values())
+        + "\n\n"
+    )
+    write_text_atomic(path, updated_text)
+
+
 def record_changed_message_notes(paths: Iterable[Path]) -> None:
     changed_notes_file = os.environ.get(CHANGED_MESSAGE_NOTES_FILE_ENV)
     if not changed_notes_file:
@@ -285,16 +319,19 @@ def save_message_notifications(
     notes_root: Path,
     entries: Iterable[MessageLogEntry],
 ) -> list[str]:
-    inbox_lines: list[str] = []
+    inbox_lines_by_note_title: dict[str, str] = {}
     changed_message_notes: list[Path] = []
     for entry in entries:
         note_path = message_note_path(notes_root, entry)
         ensure_message_note(note_path, entry)
         if append_message_block(note_path, entry):
             changed_message_notes.append(note_path)
-        inbox_lines.append(notification_line(entry, note_path.stem))
+        inbox_lines_by_note_title.pop(note_path.stem, None)
+        inbox_lines_by_note_title[note_path.stem] = notification_line(
+            entry, note_path.stem
+        )
 
-    append_markdown_lines(notes_file, inbox_lines)
+    replace_conversation_notifications(notes_file, inbox_lines_by_note_title)
     record_changed_message_notes(changed_message_notes)
     delete_unlinked_message_notes(notes_root)
-    return inbox_lines
+    return list(inbox_lines_by_note_title.values())

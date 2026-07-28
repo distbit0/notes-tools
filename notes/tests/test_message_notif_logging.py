@@ -57,10 +57,20 @@ def test_save_message_notifications_keeps_preview_and_reuses_conversation_note(
         tmp_path,
         [make_entry("100", "full first message, not just the preview", reply)],
     )
+    first_inbox_text = inbox_path.read_text(encoding="utf-8")
+    inbox_path.write_text(
+        first_inbox_text.replace(first_lines[0], f"- {first_lines[0]}")
+        + first_lines[0]
+        + "\n\n",
+        encoding="utf-8",
+    )
     second_lines = save_message_notifications(
         inbox_path,
         tmp_path,
-        [make_entry("101", "full second message in the same conversation")],
+        [
+            make_entry("101", "full second message in the same conversation"),
+            make_entry("102", "full third message in the same conversation"),
+        ],
     )
 
     message_notes = sorted(tmp_path.glob(f"msg - Discord - {CONTACT_NAME} - *.md"))
@@ -71,17 +81,21 @@ def test_save_message_notifications_keeps_preview_and_reuses_conversation_note(
     )
     assert second_lines[0].startswith(
         f"new notif: discord: [{CONTACT_NAME}: truncated preview]"
-        f"(https://discord.com/channels/@me/10/101) [[msg - Discord - {CONTACT_NAME} - "
+        f"(https://discord.com/channels/@me/10/102) [[msg - Discord - {CONTACT_NAME} - "
     )
 
     inbox_text = inbox_path.read_text(encoding="utf-8")
-    assert inbox_text.count("new notif: discord:") == 2
-    assert inbox_text.count(f"[[msg - Discord - {CONTACT_NAME} - ") == 2
+    assert inbox_text.count("new notif: discord:") == 1
+    assert inbox_text.count(f"[[msg - Discord - {CONTACT_NAME} - ") == 1
+    assert "https://discord.com/channels/@me/10/100" not in inbox_text
+    assert "https://discord.com/channels/@me/10/101" not in inbox_text
+    assert "https://discord.com/channels/@me/10/102" in inbox_text
 
     note_text = message_notes[0].read_text(encoding="utf-8")
-    assert note_text.count("<!-- msg-message") == 2
+    assert note_text.count("<!-- msg-message") == 3
     assert "full first message, not just the preview" in note_text
     assert "full second message in the same conversation" in note_text
+    assert "full third message in the same conversation" in note_text
     assert "Replying to:" in note_text
     assert "full earlier message being replied to" in note_text
 
