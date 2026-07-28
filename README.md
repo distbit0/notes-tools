@@ -10,12 +10,10 @@ The tables cover runnable entry points. The remaining Python and JavaScript file
 
 | Script | Purpose |
 | --- | --- |
-| `chatgpt_pending_convos_to_notes.py` | Disabled local writer for the former ChatGPT inbox-reminder workflow; retained but not called by scheduled automation. |
 | `auth_telegram_notifs.py` | Interactively creates or refreshes the Telegram session used by the notification importer. |
 | `chatgpt_convos_to_notes.mjs` | Exports active ChatGPT conversations into the local append-only archive. |
 | `discord_notifs_to_notes.py` | Contains the Discord DM and mention importer; its runtime switch is currently off. |
 | `github_notifs_to_notes.py` | Saves unread GitHub notifications to the notes inbox, then marks them read. |
-| `linear_notifs_to_notes.py` | Contains a Linear notification importer, but is currently disabled by an immediate exit. |
 | `migrate_note_frontmatter_directives.py` | Moves legacy note directives into YAML frontmatter and removes obsolete todo blocks. |
 | `normalize_markdown_filenames.py` | Renames Markdown files to stable slugs and updates affected wikilinks. |
 | `open_chatgpt_conversations_in_brave.mjs` | Incrementally writes active ChatGPT conversation URLs oldest-first to a text file when Brave history does not show them as viewed since their latest assistant response; it does not launch Brave. An interrupted initial browser-opening run can be recovered from an exact-title manifest in its state directory. |

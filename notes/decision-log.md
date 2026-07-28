@@ -3,7 +3,7 @@
 ## 2026-07-17: Bound ChatGPT backend request volume
 
 - The separate 15-minute pending-conversation scan was removed after it repeatedly scanned roughly 1,600 conversations and triggered sustained HTTP 429 responses.
-- The pending-reminder writer is now retained but disabled. The Brave opener runs every four hours. Archive export remains at 03:00 and 15:00, and uses 100-conversation list pages so it retains complete cutoff coverage with fewer requests.
+- The Brave opener runs every four hours. Archive export remains at 03:00 and 15:00, and uses 100-conversation list pages so it retains complete cutoff coverage with fewer requests.
 - All direct ChatGPT backend work shares one client with 10–15 second pacing. A 429 is never retried: it records a shared 24-hour cooldown, terminates the triggering run visibly, and makes later invocations explicit zero-request no-ops until expiry.
 - The user chose to retain low-rate access to the unofficial consumer backend. Lower request volume reduces the observed failure mode but does not remove account or terms risk.
 
