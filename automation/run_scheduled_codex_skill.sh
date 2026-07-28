@@ -9,7 +9,6 @@ readonly TOOLS_DIR="${HOME}/dev/notes-tools"
 readonly LOG_DIR="${SCHEDULED_CODEX_LOG_DIR:-${TOOLS_DIR}/automation/scheduled-codex-logs}"
 readonly LOG_MAX_BYTES="${SCHEDULED_CODEX_LOG_MAX_BYTES:-200000}"
 readonly STATE_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/scheduled-codex"
-readonly MESSAGE_REPLY_CHANGED_NOTES_FILE="${STATE_DIR}/message-reply-changed-notes.txt"
 readonly DESKTOP_ERROR_LOG="${DESKTOP_ERROR_LOG_PATH:-${HOME}/dev/error_log.txt}"
 readonly DESKTOP_ERROR_LOGGER="${DESKTOP_ERROR_LOGGER:-${HOME}/dev/misc/automation/log_desktop_error.sh}"
 readonly NOTES_AUTO_COMMIT_LOCK="${SCHEDULED_CODEX_NOTES_AUTO_COMMIT_LOCK:-${NOTES_DIR}/.git/git_auto_commit.lock}"
@@ -28,22 +27,8 @@ scheduled_codex_jobs() {
 }
 
 scheduled_message_reply_jobs() {
-  local extra_prompt
-
+  scheduled_work_count=$((scheduled_work_count + 1))
   run_and_record_message_pull_scripts || :
-
-  normalize_changed_message_notes
-
-  if [[ -s "$MESSAGE_REPLY_CHANGED_NOTES_FILE" ]]; then
-    extra_prompt="Use this changed message notes file when finding reply candidates: ${MESSAGE_REPLY_CHANGED_NOTES_FILE}"
-    scheduled_codex_job_count=$((scheduled_codex_job_count + 1))
-    run_and_record_codex_job "scheduled-draft-message-replies" "scheduled-draft-message-replies" "exec" "$extra_prompt"
-  else
-    scheduled_codex_job_count=$((scheduled_codex_job_count + 1))
-    printf '[%s] skipped scheduled Codex job: scheduled-draft-message-replies; no new pulled message notes.\n' \
-      "$(date --iso-8601=seconds)" | append_job_log "${LOG_DIR}/scheduled-draft-message-replies.log"
-  fi
-
   return 0
 }
 
@@ -309,8 +294,7 @@ run_message_pull_script() {
   printf 'running %s message pull script: %s\n' "$label" "$script_path"
   (
     cd "$TOOLS_DIR"
-    MESSAGE_NOTIF_CHANGED_NOTES_FILE="$MESSAGE_REPLY_CHANGED_NOTES_FILE" \
-      uv run --env-file .env python "$script_path" < /dev/null
+    uv run --env-file .env python "$script_path" < /dev/null
   ) || status=$?
   status="${status:-0}"
   printf '%s message pull script status=%s\n' "$label" "$status"
@@ -337,18 +321,6 @@ run_message_pull_scripts() {
   return "$status"
 }
 
-normalize_changed_message_notes() {
-  local temp_file
-
-  if [[ ! -s "$MESSAGE_REPLY_CHANGED_NOTES_FILE" ]]; then
-    return 0
-  fi
-
-  temp_file="$(mktemp "${STATE_DIR}/changed-message-notes.XXXXXX")"
-  sort -u "$MESSAGE_REPLY_CHANGED_NOTES_FILE" > "$temp_file"
-  mv "$temp_file" "$MESSAGE_REPLY_CHANGED_NOTES_FILE"
-}
-
 run_and_record_message_pull_scripts() {
   local log_file="${LOG_DIR}/message-pull-scripts.log"
   local output_file
@@ -356,8 +328,7 @@ run_and_record_message_pull_scripts() {
   local error_count_before
 
   mkdir -p "$LOG_DIR" "$STATE_DIR"
-  error_count_before="$(desktop_error_count scheduled-draft-message-replies)"
-  : > "$MESSAGE_REPLY_CHANGED_NOTES_FILE"
+  error_count_before="$(desktop_error_count message-pull-scripts)"
   output_file="$(mktemp "${STATE_DIR}/message-pull-scripts.XXXXXX")"
 
   set +e
@@ -376,7 +347,7 @@ run_and_record_message_pull_scripts() {
   if (( status != 0 )); then
     log_scheduled_job_failure \
       "message-pull-scripts" \
-      "scheduled-draft-message-replies" \
+      "message-pull-scripts" \
       "$status" \
       "$error_count_before" || true
   fi
@@ -692,7 +663,7 @@ scheduled_codex_job() {
     return 0
   fi
 
-  scheduled_codex_job_count=$((scheduled_codex_job_count + 1))
+  scheduled_work_count=$((scheduled_work_count + 1))
   if ! claim_catchup_run "$job_name" "$run_slot" "$override_existing_run"; then
     return 0
   fi
@@ -713,7 +684,7 @@ scheduled_error_log_job() {
     return 0
   fi
 
-  scheduled_codex_job_count=$((scheduled_codex_job_count + 1))
+  scheduled_work_count=$((scheduled_work_count + 1))
   error_count_before="$(desktop_error_count "$skill_name")"
 
   set +e
@@ -786,7 +757,7 @@ scheduled_codex_job_every_n_days() {
     return 0
   fi
 
-  scheduled_codex_job_count=$((scheduled_codex_job_count + 1))
+  scheduled_work_count=$((scheduled_work_count + 1))
 
   if ! valid_positive_integer "$period_days"; then
     echo "Invalid cadence for scheduled job ${job_name}: period_days must be a positive integer." >&2
@@ -875,7 +846,7 @@ if [[ ! -d "$NOTES_DIR" ]]; then
   exit 1
 fi
 
-scheduled_codex_job_count=0
+scheduled_work_count=0
 overall_status=0
 mkdir -p "$LOG_DIR" "$STATE_DIR"
 
@@ -896,8 +867,8 @@ case "$run_mode" in
     ;;
 esac
 
-if (( scheduled_codex_job_count == 0 )); then
-  echo "No scheduled Codex jobs configured in scheduled_codex_jobs." >&2
+if (( scheduled_work_count == 0 )); then
+  echo "No scheduled work configured for this mode." >&2
   exit 2
 fi
 

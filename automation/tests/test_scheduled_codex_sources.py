@@ -97,7 +97,6 @@ def test_unattended_scheduled_jobs_do_not_relabel_as_cli() -> None:
         "scheduled-security-audit",
         "scheduled-distill-assistant-chats",
         "scheduled-infolio-relevance",
-        "scheduled-draft-message-replies",
     }
 
     job_sources = dict(
@@ -161,13 +160,25 @@ def test_goal_advancement_is_not_automatically_scheduled() -> None:
     assert "scheduled-goal-advancement" not in scheduled_jobs
 
 
+def test_message_timer_pulls_notes_without_drafting_replies() -> None:
+    scheduler_text = SCHEDULER.read_text(encoding="utf-8")
+    message_jobs = scheduler_text[
+        scheduler_text.index("scheduled_message_reply_jobs()"):
+        scheduler_text.index("\nusage()")
+    ]
+
+    assert "run_and_record_message_pull_scripts" in message_jobs
+    assert "scheduled-draft-message-replies" not in scheduler_text
+    assert "MESSAGE_NOTIF_CHANGED_NOTES_FILE" not in scheduler_text
+
+
 def test_scheduler_holds_notes_auto_commit_lock_for_entire_run() -> None:
     scheduler_text = SCHEDULER.read_text(encoding="utf-8")
     run_job = scheduler_text[
         scheduler_text.index("run_and_record_codex_job()"):
         scheduler_text.index("\nvalidate_job_config()")
     ]
-    top_level = scheduler_text[scheduler_text.index("scheduled_codex_job_count=0") :]
+    top_level = scheduler_text[scheduler_text.index("scheduled_work_count=0") :]
 
     assert "acquire_notes_auto_commit_lock" not in run_job
     assert '"${codex_command[@]}" 7>&- 8>&-' in run_job

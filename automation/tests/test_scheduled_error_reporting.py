@@ -23,6 +23,19 @@ ROUTING_REFERENCES = {
     "error_log",
     "log_desktop_error",
 }
+RECURRING_REPORT_SKILLS = {
+    "scheduled-answer-open-questions",
+    "scheduled-distill-assistant-chats",
+    "scheduled-fix-logged-errors",
+    "scheduled-goal-advancement",
+    "scheduled-hard-feedback",
+    "scheduled-idea-space-search",
+    "scheduled-infolio-relevance",
+    "scheduled-note-critique",
+    "scheduled-resolve-contradictions",
+    "scheduled-security-audit",
+    "scheduled-tweet-ideas",
+}
 
 
 def test_agents_md_is_the_shared_log_routing_authority() -> None:
@@ -97,6 +110,50 @@ def test_logged_error_fixer_requires_context_complete_judgment_based_reports() -
     assert "user intent" in skill_text
     assert "unresolved" in skill_text and "why" in skill_text
     assert "reroute" in skill_text and "contradictions.md" in skill_text
+    assert "suppressed" in skill_text
+    assert "adjacent actionable" in skill_text
+
+
+def test_recurring_reports_share_feedback_and_instruction_contract() -> None:
+    contract_reference = "recurring-report-contract.md"
+
+    for skill_name in RECURRING_REPORT_SKILLS:
+        skill_text = (SKILLS_DIR / skill_name / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        feedback_text = (SKILLS_DIR / skill_name / "feedback.md").read_text(
+            encoding="utf-8"
+        )
+
+        assert contract_reference in skill_text
+        assert feedback_text.count("\nfeedback:") == feedback_text.count(
+            "\ninstructions:"
+        )
+
+
+def test_tweet_feedback_keeps_posting_candidates_first() -> None:
+    skill_directory = SKILLS_DIR / "scheduled-tweet-ideas"
+    feedback_text = (skill_directory / "feedback.md").read_text(encoding="utf-8")
+    candidates_start = feedback_text.index("## Accepted and unpublished")
+    other_start = feedback_text.index("## Other tweet ideas")
+    candidate_text = feedback_text[candidates_start:other_start]
+
+    assert candidates_start < other_start
+    assert "accepted: true" in candidate_text
+    assert "accepted: false" not in candidate_text
+    assert "published: true" not in candidate_text
+    assert candidate_text.count("\naccepted:") == candidate_text.count(
+        "\npublished:"
+    )
+    assert not (skill_directory / "scripts/open_feedback_tabs.sh").exists()
+
+
+def test_draft_message_reply_skill_requires_explicit_invocation() -> None:
+    metadata = (
+        SKILLS_DIR / "scheduled-draft-message-replies/agents/openai.yaml"
+    ).read_text(encoding="utf-8")
+
+    assert "allow_implicit_invocation: false" in metadata
 
 
 def test_goal_advancement_preserves_notes_and_tracks_action_origins() -> None:

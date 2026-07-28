@@ -12,6 +12,13 @@
 - Decision: pause automatic `scheduled-goal-advancement` runs by leaving it out of the recurring scheduled-job registry and disabling the now-unused 07:00 user timer.
 - Scope: keep the skill and its dedicated `daily-goal-advancement` Codex profile available for manual use or a future explicit reactivation.
 
+## Message reply drafting
+
+- Date: 2026-07-28
+- Decision: keep the 15-minute unified message pulls active, but do not automatically run `scheduled-draft-message-replies` after them.
+- Scope: retain the drafting skill for explicit manual invocation only, with implicit invocation disabled.
+- Rationale: message ingestion and reply drafting are separate choices. Frequent notification capture should not itself authorize generated replies.
+
 ## Behavior-aware hard feedback scheduling
 
 - Date: 2026-07-13
@@ -44,5 +51,5 @@
 
 - The shared wrapper always runs scheduled skills from `~/notes`; each skill owns its own file selection and mutation policy, while systemd owns wakeups and the wrapper owns cadence.
 - Scheduled jobs use `exec` sessions so conversation-processing jobs cannot ingest their own automation threads; `cli` remains available when a job must appear in normal Codex thread lists.
-- Importers record changed message-note paths before reply drafting. Drafting runs only when the unified message pull actually changed message notes.
+- Message importers run independently of reply drafting.
 - Codex state-schema failures remain explicit; the scheduler must not silently switch execution paths.
