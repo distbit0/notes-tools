@@ -160,6 +160,26 @@ def test_goal_advancement_is_not_automatically_scheduled() -> None:
     assert "scheduled-goal-advancement" not in scheduled_jobs
 
 
+def test_interactive_todo_kickoff_runs_three_times_daily_as_cli() -> None:
+    scheduler_text = SCHEDULER.read_text(encoding="utf-8")
+    scheduled_jobs = scheduler_text[
+        scheduler_text.index("scheduled_codex_jobs()"):
+        scheduler_text.index("\nscheduled_message_reply_jobs()")
+    ]
+
+    assert (
+        'scheduled_todo_kickoff_job "scheduled-todo-kickoff" '
+        '"execute-todo" "cli" "11:00 16:00 21:00"'
+    ) in scheduled_jobs
+    kickoff_job = scheduler_text[
+        scheduler_text.index("scheduled_todo_kickoff_job()"):
+        scheduler_text.index("\nscheduled_error_log_job()")
+    ]
+    assert 'if [[ "$session_source" != "cli" ]]' in kickoff_job
+    assert '"$TODO_KICKOFF_SCRIPT"' in kickoff_job
+    assert "claim_catchup_run" in kickoff_job
+
+
 def test_message_timer_pulls_notes_without_drafting_replies() -> None:
     scheduler_text = SCHEDULER.read_text(encoding="utf-8")
     message_jobs = scheduler_text[

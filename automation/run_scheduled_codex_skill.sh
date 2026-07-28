@@ -12,6 +12,7 @@ readonly STATE_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/scheduled-codex"
 readonly DESKTOP_ERROR_LOG="${DESKTOP_ERROR_LOG_PATH:-${HOME}/dev/error_log.txt}"
 readonly DESKTOP_ERROR_LOGGER="${DESKTOP_ERROR_LOGGER:-${HOME}/dev/misc/automation/log_desktop_error.sh}"
 readonly NOTES_AUTO_COMMIT_LOCK="${SCHEDULED_CODEX_NOTES_AUTO_COMMIT_LOCK:-${NOTES_DIR}/.git/git_auto_commit.lock}"
+readonly TODO_KICKOFF_SCRIPT="${SCHEDULED_TODO_KICKOFF_SCRIPT:-${TOOLS_DIR}/automation/start_random_todo.py}"
 readonly CATCHUP_GRACE_SECONDS=600
 
 scheduled_codex_jobs() {
@@ -24,6 +25,7 @@ scheduled_codex_jobs() {
   scheduled_codex_job_every_n_days "scheduled-distill-assistant-chats" "scheduled-distill-assistant-chats" "exec" "16:00" 2 0
   scheduled_codex_job_every_n_days "scheduled-infolio-relevance" "scheduled-infolio-relevance" "exec" "21:00" 3 1 "" prepare_infolio_relevance_prompt
   scheduled_error_log_job "scheduled-fix-logged-errors" "scheduled-fix-logged-errors" "exec" "06:00"
+  scheduled_todo_kickoff_job "scheduled-todo-kickoff" "execute-todo" "cli" "11:00 16:00 21:00"
 }
 
 scheduled_message_reply_jobs() {
@@ -668,6 +670,60 @@ scheduled_codex_job() {
   fi
 
   run_and_record_codex_job "$job_name" "$skill_name" "$session_source" "$extra_prompt" "$profile_name"
+}
+
+scheduled_todo_kickoff_job() {
+  local job_name="${1:-}"
+  local skill_name="${2:-}"
+  local session_source="${3:-}"
+  local schedule_times="${4:-}"
+  local log_file="${LOG_DIR}/${job_name}.log"
+  local output_file
+  local status
+  local error_count_before
+
+  validate_job_config "$job_name" "$skill_name" "$session_source" ""
+  if [[ "$session_source" != "cli" ]]; then
+    echo "Interactive todo kickoff sessions must use the cli session source." >&2
+    return 2
+  fi
+  if ! slot_matches_schedule "$schedule_times" "$run_slot"; then
+    return 0
+  fi
+
+  scheduled_work_count=$((scheduled_work_count + 1))
+  if ! claim_catchup_run "$job_name" "$run_slot" "$override_existing_run"; then
+    return 0
+  fi
+  if [[ ! -x "$TODO_KICKOFF_SCRIPT" ]]; then
+    echo "Todo kickoff script not found or not executable: $TODO_KICKOFF_SCRIPT" >&2
+    return 1
+  fi
+
+  error_count_before="$(desktop_error_count "$skill_name")"
+  output_file="$(mktemp "${STATE_DIR}/${job_name}.output.XXXXXX")"
+  set +e
+  "$TODO_KICKOFF_SCRIPT" > "$output_file" 2>&1
+  status=$?
+  set -e
+
+  {
+    printf '\n[%s] scheduled interactive todo kickoff: %s status=%s\n' \
+      "$(date --iso-8601=seconds)" "$job_name" "$status"
+    printf 'session source: %s\n' "$session_source"
+    cat "$output_file"
+    printf '\n'
+  } | append_job_log "$log_file"
+  rm -f "$output_file"
+
+  if (( status != 0 )); then
+    log_scheduled_job_failure \
+      "$job_name" "$skill_name" "$status" "$error_count_before" || true
+    if (( overall_status == 0 )); then
+      overall_status="$status"
+    fi
+  fi
+  return 0
 }
 
 scheduled_error_log_job() {

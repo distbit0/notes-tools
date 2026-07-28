@@ -18,6 +18,5 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["notes"]
+pythonpath = ["notes", "."]
 testpaths = ["notes/tests", "automation/tests"]
-
