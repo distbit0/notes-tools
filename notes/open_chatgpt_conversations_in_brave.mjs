@@ -298,13 +298,15 @@ function resolveConversationReferences(candidates, references) {
   }
 
   const resolvedIds = new Set();
+  const resolutionErrors = [];
   for (const reference of references) {
     const conversationId = conversationIdFromUrl(reference);
     if (conversationId) {
       if (!candidatesById.has(conversationId)) {
-        throw new UserFacingError(
+        resolutionErrors.push(
           `Recovered URL does not identify an active conversation: ${reference}`,
         );
+        continue;
       }
       resolvedIds.add(conversationId);
       continue;
@@ -312,12 +314,16 @@ function resolveConversationReferences(candidates, references) {
 
     const matches = candidatesByTitle.get(reference) || [];
     if (matches.length !== 1) {
-      throw new UserFacingError(
+      resolutionErrors.push(
         `Recovered title must match exactly one active conversation; ` +
           `${JSON.stringify(reference)} matched ${matches.length}.`,
       );
+      continue;
     }
     resolvedIds.add(matches[0].id);
+  }
+  if (resolutionErrors.length > 0) {
+    throw new UserFacingError(resolutionErrors.join("\n"));
   }
   return resolvedIds;
 }
