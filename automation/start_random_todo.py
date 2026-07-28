@@ -102,18 +102,6 @@ def add_session_annotation(inbox_path: Path, todo: Todo, session_id: str) -> Non
     write_lines_atomically(inbox_path, lines)
 
 
-def remove_session_annotation(inbox_path: Path, todo: Todo, session_id: str) -> None:
-    lines = inbox_path.read_text(encoding="utf-8").splitlines(keepends=True)
-    current_line = lines[todo.line_index].rstrip("\r\n")
-    expected_line = f"{todo.line} codex resume {session_id}"
-    if current_line != expected_line:
-        raise RuntimeError("could not roll back the changed inbox todo safely")
-
-    newline = "\n" if lines[todo.line_index].endswith("\n") else ""
-    lines[todo.line_index] = f"{todo.line}{newline}"
-    write_lines_atomically(inbox_path, lines)
-
-
 def parse_herdr_payload(output: str, operation: str) -> dict:
     try:
         payload = json.loads(output)
@@ -277,7 +265,12 @@ def create_todo_tab(herdr: Herdr, snapshot: dict, task: str) -> tuple[str, str]:
     return str(tab["tab_id"]), str(root_pane["pane_id"])
 
 
-def start_codex(herdr: Herdr, pane_id: str, session_id: str | None) -> str:
+def start_codex(
+    herdr: Herdr,
+    pane_id: str,
+    session_id: str | None,
+    initial_prompt: str | None = None,
+) -> str:
     agent_name = f"todo-{uuid.uuid4().hex[:10]}"
     arguments = [
         "agent",
@@ -303,7 +296,10 @@ def start_codex(herdr: Herdr, pane_id: str, session_id: str | None) -> str:
                 raise
             time.sleep(0.1)
 
-    session_ready_deadline = time.monotonic() + 10
+    if initial_prompt:
+        herdr.run_json(["agent", "prompt", pane_id, initial_prompt])
+
+    session_ready_deadline = time.monotonic() + 30
     while True:
         agent = result_object(herdr.run_json(["agent", "get", pane_id])).get("agent")
         if not isinstance(agent, dict):
@@ -357,8 +353,18 @@ def kickoff(todo: Todo, inbox_path: Path, herdr: Herdr) -> dict:
             }
 
     tab_id, pane_id = create_todo_tab(herdr, snapshot, todo.task)
+    initial_prompt = (
+        None
+        if todo.session_id
+        else f"Use $execute-todo for this inbox item:\n\n{todo.task}"
+    )
     try:
-        session_id = start_codex(herdr, pane_id, todo.session_id)
+        session_id = start_codex(
+            herdr,
+            pane_id,
+            todo.session_id,
+            initial_prompt,
+        )
     except Exception:
         cleanup_error = close_new_tab(herdr, tab_id)
         if cleanup_error:
@@ -374,23 +380,14 @@ def kickoff(todo: Todo, inbox_path: Path, herdr: Herdr) -> dict:
             "task": todo.task,
         }
 
-    add_session_annotation(inbox_path, todo, session_id)
-    prompt = f"Use $execute-todo for this inbox item:\n\n{todo.task}"
     try:
-        herdr.run_json(["agent", "prompt", pane_id, prompt])
-    except Exception as prompt_error:
-        rollback_errors: list[str] = []
-        try:
-            remove_session_annotation(inbox_path, todo, session_id)
-        except RuntimeError as exc:
-            rollback_errors.append(str(exc))
+        add_session_annotation(inbox_path, todo, session_id)
+    except Exception:
         cleanup_error = close_new_tab(herdr, tab_id)
         if cleanup_error:
-            rollback_errors.append(cleanup_error)
-        if rollback_errors:
             raise RuntimeError(
-                f"{prompt_error}; rollback was incomplete: {'; '.join(rollback_errors)}"
-            ) from prompt_error
+                f"the inbox annotation failed; tab cleanup also failed: {cleanup_error}"
+            )
         raise
 
     focus_tab_and_window(herdr, tab_id)
