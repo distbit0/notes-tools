@@ -39,7 +39,9 @@ class Todo:
 
 
 class HerdrError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, code: str = "") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def parse_inbox_todos(text: str) -> list[Todo]:
@@ -121,7 +123,10 @@ def parse_herdr_payload(output: str, operation: str) -> dict:
         raise HerdrError(f"{operation} returned a non-object response")
     error = payload.get("error")
     if isinstance(error, dict):
-        raise HerdrError(f"{operation} failed: {error.get('message') or 'unknown error'}")
+        raise HerdrError(
+            f"{operation} failed: {error.get('message') or 'unknown error'}",
+            code=str(error.get("code") or ""),
+        )
     return payload
 
 
@@ -287,7 +292,16 @@ def start_codex(herdr: Herdr, pane_id: str, session_id: str | None) -> str:
     ]
     if session_id:
         arguments.extend(["--", "resume", session_id])
-    herdr.run_json(arguments)
+
+    shell_ready_deadline = time.monotonic() + 10
+    while True:
+        try:
+            herdr.run_json(arguments)
+            break
+        except HerdrError as exc:
+            if exc.code != "agent_pane_busy" or time.monotonic() >= shell_ready_deadline:
+                raise
+            time.sleep(0.1)
 
     agent = result_object(herdr.run_json(["agent", "get", pane_id])).get("agent")
     if not isinstance(agent, dict):
