@@ -1,7 +1,14 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 const REQUEST_RETRY_LIMIT = 3;
@@ -103,6 +110,7 @@ export class ChatGptClient {
     this.accessToken = "";
     this.accountId = "";
     this.requestCount = 0;
+    this.fetch = options.fetch ?? curlFetch;
   }
 
   async initialize() {
@@ -237,7 +245,7 @@ export class ChatGptClient {
       await this.throttler.wait();
       this.requestCount += 1;
       try {
-        const response = await fetch(url, {
+        const response = await this.fetch(url, {
           ...init,
           signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         });
@@ -365,6 +373,114 @@ function redactedRequestPath(requestUrl) {
     return `${url.pathname}${url.search}`;
   } catch {
     return "unparseable-request-url";
+  }
+}
+
+async function curlFetch(url, init) {
+  const temporaryDirectory = mkdtempSync(
+    path.join(os.tmpdir(), "chatgpt-curl-request-"),
+  );
+  const configPath = path.join(temporaryDirectory, "curl.conf");
+  const requestBodyPath = path.join(temporaryDirectory, "request-body");
+  const responseBodyPath = path.join(temporaryDirectory, "response-body");
+  const responseHeadersPath = path.join(temporaryDirectory, "response-headers");
+
+  try {
+    const config = Object.entries(init.headers || {})
+      .map(([name, value]) => curlHeaderConfig(name, value))
+      .join("\n");
+    writeFileSync(configPath, `${config}\n`, { encoding: "utf8", mode: 0o600 });
+
+    const curlArguments = [
+      "--silent",
+      "--show-error",
+      "--location",
+      "--proto-redir",
+      "=https",
+      "--compressed",
+      "--max-time",
+      String(REQUEST_TIMEOUT_MS / 1000),
+      "--config",
+      configPath,
+      "--dump-header",
+      responseHeadersPath,
+      "--output",
+      responseBodyPath,
+    ];
+    if (init.method) curlArguments.push("--request", init.method);
+    if (init.body !== undefined) {
+      writeFileSync(requestBodyPath, init.body, { mode: 0o600 });
+      curlArguments.push("--data-binary", `@${requestBodyPath}`);
+    }
+    curlArguments.push(url);
+
+    const result = spawnSync("curl", curlArguments, {
+      encoding: "utf8",
+      timeout: REQUEST_TIMEOUT_MS + 5000,
+      maxBuffer: 1024 * 1024,
+    });
+    if (result.status !== 0) {
+      throw new Error(
+        `curl request failed: ${(result.stderr || result.error?.message || "unknown error").trim()}`,
+      );
+    }
+
+    return new CurlResponse(
+      readFileSync(responseHeadersPath, "utf8"),
+      readFileSync(responseBodyPath),
+    );
+  } finally {
+    rmSync(temporaryDirectory, { recursive: true });
+  }
+}
+
+function curlHeaderConfig(name, value) {
+  const header = `${name}: ${value}`;
+  if (/[\r\n]/.test(header)) {
+    throw new Error("HTTP header contains a newline.");
+  }
+  return `header = "${header.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+class CurlResponse {
+  constructor(rawHeaders, body) {
+    const headerBlocks = rawHeaders
+      .split(/\r?\n\r?\n/)
+      .filter((block) => /^HTTP\/\S+\s+\d{3}/.test(block));
+    const responseHeaderLines = headerBlocks.at(-1)?.split(/\r?\n/) || [];
+    const statusMatch = responseHeaderLines.shift()?.match(/^HTTP\/\S+\s+(\d{3})/);
+    if (!statusMatch) throw new Error("curl response is missing an HTTP status.");
+
+    this.status = Number.parseInt(statusMatch[1], 10);
+    this.ok = this.status >= 200 && this.status < 300;
+    this.body = body;
+    const headers = new Map();
+    for (const line of responseHeaderLines) {
+      const separatorIndex = line.indexOf(":");
+      if (separatorIndex < 1) continue;
+      headers.set(
+        line.slice(0, separatorIndex).trim().toLowerCase(),
+        line.slice(separatorIndex + 1).trim(),
+      );
+    }
+    this.headers = {
+      get: (name) => headers.get(name.toLowerCase()) ?? null,
+    };
+  }
+
+  async json() {
+    return JSON.parse(this.body.toString("utf8"));
+  }
+
+  async text() {
+    return this.body.toString("utf8");
+  }
+
+  async arrayBuffer() {
+    return this.body.buffer.slice(
+      this.body.byteOffset,
+      this.body.byteOffset + this.body.byteLength,
+    );
   }
 }
 

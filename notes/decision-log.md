@@ -40,7 +40,7 @@
 ## ChatGPT archive is an append-only message ledger
 
 - Sync only active conversations updated since the configured cutoff. The local state records seen message IDs, so deleting an exported Markdown file does not cause old messages to be reconstructed.
-- Network fetching stays in Node because equivalent authenticated Python requests were rejected by Cloudflare; Python owns local Brave-cookie extraction only.
+- ChatGPT HTTP requests use `curl` because Cloudflare stalls Node TLS handshakes while accepting the same Brave session through `curl`; secrets are supplied through mode-0600 temporary config files. Python remains limited to local Brave-cookie extraction because equivalent authenticated Python requests were rejected.
 
 ## Private regression data stays local
 

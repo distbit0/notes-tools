@@ -19,6 +19,7 @@ const RATE_LIMIT_OBSERVATION = JSON.parse(
 function clientOptions(rateLimitStatePath) {
   return {
     bearer: "",
+    fetch: (...args) => globalThis.fetch(...args),
     jitterMs: 0,
     rateLimitStatePath,
     requestDelayMs: 0,
