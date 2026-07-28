@@ -9,7 +9,8 @@
 
 ## 2026-07-28: Brave history is the conversation-open ledger
 
-- The four-hour opener scans all active normal and project conversations. A conversation absent from Brave history opens unconditionally; a visited conversation reopens only when its latest visible assistant message is more than ten minutes newer than its latest Brave visit.
+- The opener performs one complete active-conversation scan when its dedicated ledger is absent. Each later four-hour run stops normal and per-project pagination at the last fully successful scan watermarks; failed or artificially limited runs never advance them.
+- A conversation absent from Brave history opens unconditionally; a visited conversation reopens only when its latest visible assistant message is more than ten minutes newer than its latest Brave visit.
 - The grace interval treats a response completed shortly after navigation as viewed. Brave history is the sole open ledger, so clearing or expiring history intentionally makes conversations eligible again.
 - The former `open_in_browser` project handoff, interactive-HTML download/open behavior, browser-action state, and pending-inbox integration were removed.
 

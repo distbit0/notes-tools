@@ -18,7 +18,7 @@ The tables cover runnable entry points. The remaining Python and JavaScript file
 | `linear_notifs_to_notes.py` | Contains a Linear notification importer, but is currently disabled by an immediate exit. |
 | `migrate_note_frontmatter_directives.py` | Moves legacy note directives into YAML frontmatter and removes obsolete todo blocks. |
 | `normalize_markdown_filenames.py` | Renames Markdown files to stable slugs and updates affected wikilinks. |
-| `open_chatgpt_conversations_in_brave.mjs` | Opens active ChatGPT conversations that Brave history does not show as viewed since their latest assistant response. |
+| `open_chatgpt_conversations_in_brave.mjs` | Incrementally opens active ChatGPT conversations that Brave history does not show as viewed since their latest assistant response. |
 | `route_friend_discussion_ideas.py` | Classifies discussion ideas from a scratchpad and routes them into tagged friend notes. |
 | `select_infolio_relevance_articles.py` | Selects an unreviewed sample from a ranked Infolio article queue for scheduled analysis. |
 | `social_notifs_to_notes.py` | Collects X, LessWrong, and EthResearch notifications into the notes inbox. |

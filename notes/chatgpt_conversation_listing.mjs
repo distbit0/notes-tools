@@ -1,20 +1,6 @@
 const CONVERSATIONS_PAGE_SIZE = 100;
 const PROJECT_CONVERSATIONS_PAGE_SIZE = 20;
 
-export async function listAllActiveConversations(client, maxConversations = null) {
-  const options = {
-    cutoffMs: 0,
-    maxConversations,
-  };
-  const projects = await fetchProjects(client);
-  const { candidates } = await collectConversationCandidates(
-    client,
-    options,
-    projects,
-  );
-  return candidates;
-}
-
 export async function collectConversationCandidates(
   client,
   options,

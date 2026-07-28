@@ -1,7 +1,15 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { copyFile, mkdtemp, rm } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,7 +20,8 @@ import {
   UserFacingError,
 } from "./chatgpt_backend_client.mjs";
 import {
-  listAllActiveConversations,
+  collectConversationCandidates,
+  fetchProjects,
   timestampToMs,
 } from "./chatgpt_conversation_listing.mjs";
 
@@ -30,6 +39,10 @@ const DEFAULT_RATE_LIMIT_STATE_PATH = path.join(
   HOME_DIR,
   ".local/state/chatgpt-backend-rate-limit.json",
 );
+const DEFAULT_SCAN_STATE_PATH = path.join(
+  HOME_DIR,
+  ".local/state/open-chatgpt-conversations-in-brave/state.json",
+);
 const HISTORY_GRACE_MS = 10 * 60 * 1000;
 const CHROME_EPOCH_OFFSET_MS = 11_644_473_600_000;
 
@@ -40,6 +53,8 @@ Open active ChatGPT conversations that have not been viewed in Brave since
 their latest assistant response.
 
 Options:
+  --state <file>             Successful-scan ledger
+                             (default: ${DEFAULT_SCAN_STATE_PATH})
   --profile <name>           Brave profile name (default: ${DEFAULT_BRAVE_PROFILE})
   --brave-root <dir>         Brave user data root (default: ${DEFAULT_BRAVE_ROOT})
   --bearer <token>           Use this bearer token instead of Brave cookies
@@ -79,6 +94,7 @@ function parseArgs(argv, conversationSync = loadConfiguration()) {
     jitterMs: 5000,
     projectRoot: PROJECT_ROOT,
     rateLimitStatePath: DEFAULT_RATE_LIMIT_STATE_PATH,
+    scanStatePath: DEFAULT_SCAN_STATE_PATH,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -94,6 +110,8 @@ function parseArgs(argv, conversationSync = loadConfiguration()) {
 
     if (arg === "--help" || arg === "-h") {
       options.help = true;
+    } else if (arg === "--state") {
+      options.scanStatePath = path.resolve(value());
     } else if (arg === "--profile") {
       options.braveProfile = value();
     } else if (arg === "--brave-root") {
@@ -130,7 +148,9 @@ function parseNonNegativeInteger(flag, rawValue) {
 }
 
 async function openChatGptConversations(options) {
+  const scanState = await loadScanState(options.scanStatePath);
   const summary = {
+    scanMode: scanState ? "incremental" : "full",
     discovered: 0,
     historyEntries: 0,
     conversationDetailsChecked: 0,
@@ -154,9 +174,12 @@ async function openChatGptConversations(options) {
 
   const client = new ChatGptClient(options);
   await client.initialize();
-  const candidates = await listAllActiveConversations(
+  const projects = await fetchProjects(client);
+  const { candidates, scanWatermarks } = await collectConversationCandidates(
     client,
-    options.maxConversations,
+    { cutoffMs: 0, maxConversations: options.maxConversations },
+    projects,
+    scanState?.scanWatermarks,
   );
   summary.discovered = candidates.length;
 
@@ -191,7 +214,67 @@ async function openChatGptConversations(options) {
   }
 
   summary.apiRequests = client.requestCount;
+  if (options.maxConversations === null) {
+    await saveScanState(options.scanStatePath, {
+      version: 1,
+      lastSuccessfulRunAt: new Date().toISOString(),
+      scanWatermarks,
+    });
+  }
   return { status: "success", summary };
+}
+
+async function loadScanState(scanStatePath) {
+  if (!existsSync(scanStatePath)) return null;
+  const state = JSON.parse(await readFile(scanStatePath, "utf8"));
+  if (state.version !== 1) {
+    throw new UserFacingError(
+      `Unsupported ChatGPT opener state version: ${state.version}`,
+    );
+  }
+  return {
+    ...state,
+    scanWatermarks: normalizeScanWatermarks(state.scanWatermarks),
+  };
+}
+
+function normalizeScanWatermarks(scanWatermarks) {
+  if (!scanWatermarks || typeof scanWatermarks !== "object") {
+    throw new UserFacingError("ChatGPT opener scan watermarks must be an object.");
+  }
+  const normal = scanWatermarks.normal ?? null;
+  if (normal !== null && !Number.isFinite(normal)) {
+    throw new UserFacingError(
+      "ChatGPT opener normal scan watermark must be a timestamp.",
+    );
+  }
+  const projects = scanWatermarks.projects ?? {};
+  if (!projects || typeof projects !== "object" || Array.isArray(projects)) {
+    throw new UserFacingError(
+      "ChatGPT opener project scan watermarks must be an object.",
+    );
+  }
+  for (const [projectId, updateTimeMs] of Object.entries(projects)) {
+    if (!Number.isFinite(updateTimeMs)) {
+      throw new UserFacingError(
+        `ChatGPT opener project watermark ${projectId} must be a timestamp.`,
+      );
+    }
+  }
+  return { normal, projects };
+}
+
+async function saveScanState(scanStatePath, state) {
+  await mkdir(path.dirname(scanStatePath), { recursive: true });
+  const temporaryPath = path.join(
+    path.dirname(scanStatePath),
+    `.${path.basename(scanStatePath)}.${process.pid}.${Date.now()}.tmp`,
+  );
+  await writeFile(temporaryPath, `${JSON.stringify(state, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  await rename(temporaryPath, scanStatePath);
 }
 
 async function readBraveConversationHistory(options) {
@@ -345,6 +428,7 @@ async function main() {
   const result = await openChatGptConversations(options);
   console.log(
     [
+      `Scan mode: ${result.summary.scanMode}`,
       `Discovered: ${result.summary.discovered}`,
       `Brave history entries: ${result.summary.historyEntries}`,
       `Conversation details checked: ${result.summary.conversationDetailsChecked}`,
@@ -372,6 +456,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === SCRIPT_PATH) {
 export {
   conversationIdFromUrl,
   latestVisibleAssistantMessageTimeMs,
+  loadScanState,
+  normalizeScanWatermarks,
   openChatGptConversations,
   parseArgs,
   queryConversationHistory,
