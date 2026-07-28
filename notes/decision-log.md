@@ -13,6 +13,7 @@
 - A conversation absent from Brave history is queued unconditionally; a visited conversation is queued only when its latest visible assistant message is more than ten minutes newer than its latest Brave visit.
 - The grace interval treats a response completed shortly after navigation as viewed. Brave history is the sole open ledger, so clearing or expiring history intentionally makes conversations eligible again.
 - Qualifying URLs are appended uniquely to a mode-0600 text file rather than opened directly because launching the initial backlog crashed Brave. The user removes processed URLs from that file; a later update can then queue the same conversation again.
+- Until the first full scan succeeds, an exact-title recovery manifest in the opener state directory is resolved strictly against the complete active-conversation list. This preserves URLs from the interrupted browser-opening run without trusting Brave's lossy history; the manifest is ignored once a successful scan ledger exists.
 - The former `open_in_browser` project handoff, interactive-HTML download/open behavior, browser-action state, and pending-inbox integration were removed.
 
 ## 2026-07-14: ChatGPT conversation sync schedule

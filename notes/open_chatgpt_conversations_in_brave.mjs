@@ -46,6 +46,10 @@ const DEFAULT_OUTPUT_PATH = path.join(
   HOME_DIR,
   ".local/state/open-chatgpt-conversations-in-brave/conversations-to-open.txt",
 );
+const DEFAULT_RECOVERY_TITLES_PATH = path.join(
+  HOME_DIR,
+  ".local/state/open-chatgpt-conversations-in-brave/recovered-opened-titles.txt",
+);
 const HISTORY_GRACE_MS = 10 * 60 * 1000;
 const CHROME_EPOCH_OFFSET_MS = 11_644_473_600_000;
 
@@ -62,7 +66,9 @@ Options:
   --output <file>            Text file receiving conversation URLs
                              (default: ${DEFAULT_OUTPUT_PATH})
   --include-titles <file>    Also include conversations whose exact titles are
-                             listed in this file; every title must match once
+                             listed in this file; every title must match once.
+                             An existing ${DEFAULT_RECOVERY_TITLES_PATH}
+                             is used automatically for an unfinished full scan.
   --profile <name>           Brave profile name (default: ${DEFAULT_BRAVE_PROFILE})
   --brave-root <dir>         Brave user data root (default: ${DEFAULT_BRAVE_ROOT})
   --bearer <token>           Use this bearer token instead of Brave cookies
@@ -147,6 +153,11 @@ function parseNonNegativeInteger(flag, rawValue) {
 
 async function openChatGptConversations(options) {
   const scanState = await loadScanState(options.scanStatePath);
+  const includeTitlesPath =
+    options.includeTitlesPath ||
+    (!scanState && existsSync(DEFAULT_RECOVERY_TITLES_PATH)
+      ? DEFAULT_RECOVERY_TITLES_PATH
+      : null);
   if (options.includeTitlesPath && scanState) {
     throw new UserFacingError(
       "--include-titles requires a full scan with no existing scan ledger.",
@@ -192,10 +203,10 @@ async function openChatGptConversations(options) {
     scanState?.scanWatermarks,
   );
   summary.discovered = candidates.length;
-  const recoveredConversationIds = options.includeTitlesPath
+  const recoveredConversationIds = includeTitlesPath
     ? resolveConversationTitles(
         candidates,
-        await readTitleList(options.includeTitlesPath),
+        await readTitleList(includeTitlesPath),
       )
     : new Set();
   summary.recoveredUrls = recoveredConversationIds.size;
