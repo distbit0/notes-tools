@@ -303,12 +303,18 @@ def start_codex(herdr: Herdr, pane_id: str, session_id: str | None) -> str:
                 raise
             time.sleep(0.1)
 
-    agent = result_object(herdr.run_json(["agent", "get", pane_id])).get("agent")
-    if not isinstance(agent, dict):
-        raise HerdrError("Herdr did not return the started Codex agent")
-    agent_session = agent.get("agent_session")
-    if not isinstance(agent_session, dict) or agent_session.get("kind") != "id":
-        raise HerdrError("the started Codex agent has no session id")
+    session_ready_deadline = time.monotonic() + 10
+    while True:
+        agent = result_object(herdr.run_json(["agent", "get", pane_id])).get("agent")
+        if not isinstance(agent, dict):
+            raise HerdrError("Herdr did not return the started Codex agent")
+        agent_session = agent.get("agent_session")
+        if isinstance(agent_session, dict) and agent_session.get("kind") == "id":
+            break
+        if time.monotonic() >= session_ready_deadline:
+            raise HerdrError("the started Codex agent did not report a session id")
+        time.sleep(0.1)
+
     started_session_id = str(agent_session.get("value") or "")
     if session_id and started_session_id != session_id:
         raise HerdrError(
