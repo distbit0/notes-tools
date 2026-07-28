@@ -35,6 +35,7 @@
 ## Message capture preserves upstream state
 
 - Telegram, Discord, and social importers use local cursors for deduplication and do not mutate Telegram unread state. Upstream read markers remain evidence for whether a newly seen message deserves a notification.
+- The inbox keeps at most one entry per active message conversation or GitHub thread. Telegram and Discord use their dedicated message-note identity, social DMs use the upstream conversation identity, and GitHub uses the canonical thread URL. Independent social events remain separate.
 - Desktop notification delivery and Markdown persistence complete before cursors advance or GitHub threads are marked read, so a local failure remains retryable rather than losing the alert.
 - Literal top-level `msg - *.md` filenames are a deliberate reply-workflow interface. Filename normalization preserves them, and cleanup considers them live only when linked by a non-message note.
 - Discord pulling is temporarily disabled by `DISCORD_POLLING_ENABLED = False`; its implementation, scheduled entry, and state remain intact for later re-enablement.

@@ -2,18 +2,20 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urldefrag
 
 from loguru import logger
 
 from notes_utils import (
-    append_markdown_lines,
     collapse_notification_text,
     configure_logger,
     format_notification_note_line,
+    replace_keyed_notification_lines,
     send_persistent_desktop_notification,
 )
 
@@ -21,6 +23,14 @@ from notes_utils import (
 GITHUB_API_PREFIX = "https://api.github.com"
 NOTES_FILE = Path.home() / "notes/inbox-index.md"
 LOG_PATH = Path(__file__).with_name("github-notifs.log")
+GITHUB_NOTIFICATION_LINE_RE = re.compile(
+    r"\s*(?:[-*+]\s+)?new notif: github: ", re.IGNORECASE
+)
+MARKDOWN_URL_RE = re.compile(r"\]\((?P<url>https?://[^)\s]+)\)")
+GITHUB_CONVERSATION_URL_RE = re.compile(
+    r"^https://github\.com/[^/]+/[^/]+/"
+    r"(?:issues|pull|discussions|commit)/[^/]+"
+)
 
 
 @dataclass(frozen=True)
@@ -139,6 +149,27 @@ def mark_thread_read(thread_id: str) -> None:
     run_gh_api(f"/notifications/threads/{thread_id}", method="PATCH")
 
 
+def canonical_github_thread_url(url: str) -> str:
+    url_without_fragment = urldefrag(url).url.rstrip("/")
+    conversation_match = GITHUB_CONVERSATION_URL_RE.match(url_without_fragment)
+    if conversation_match:
+        return conversation_match.group(0)
+    return url_without_fragment
+
+
+def github_notification_identity(url: str) -> str:
+    return f"github-thread:{canonical_github_thread_url(url)}"
+
+
+def legacy_github_notification_identity(line: str) -> str | None:
+    if GITHUB_NOTIFICATION_LINE_RE.match(line) is None:
+        return None
+    url_match = MARKDOWN_URL_RE.search(line)
+    if url_match is None:
+        return None
+    return github_notification_identity(url_match.group("url"))
+
+
 def main() -> int:
     configure_logger(LOG_PATH)
     ensure_gh_available()
@@ -148,19 +179,19 @@ def main() -> int:
         logger.info("No unread notifications")
         return 0
 
-    lines: list[str] = []
+    lines_by_identity: dict[str, str] = {}
     for notification in notifications:
         target_api_url = choose_target_api_url(
             notification.subject_url,
             notification.latest_comment_url,
         )
         html_url = fetch_html_url(target_api_url)
-        lines.append(
-            format_notification_note_line(
-                source="github",
-                label=notification.title,
-                url=html_url,
-            )
+        identity = github_notification_identity(html_url)
+        lines_by_identity.pop(identity, None)
+        lines_by_identity[identity] = format_notification_note_line(
+            source="github",
+            label=notification.title,
+            url=html_url,
         )
         logger.info(f"Added: {notification.title}")
         send_persistent_desktop_notification(
@@ -170,7 +201,11 @@ def main() -> int:
             on_click_url=html_url,
         )
 
-    append_markdown_lines(NOTES_FILE, lines)
+    replace_keyed_notification_lines(
+        NOTES_FILE,
+        lines_by_identity,
+        legacy_identity_for_line=legacy_github_notification_identity,
+    )
     for notification in notifications:
         mark_thread_read(notification.thread_id)
     logger.info("Processed notifications")
