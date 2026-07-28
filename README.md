@@ -10,14 +10,15 @@ The tables cover runnable entry points. The remaining Python and JavaScript file
 
 | Script | Purpose |
 | --- | --- |
-| `chatgpt_pending_convos_to_notes.py` | Persists unread or interrupted ChatGPT records supplied by the incremental browser-action scan; it makes no network requests. |
+| `chatgpt_pending_convos_to_notes.py` | Disabled local writer for the former ChatGPT inbox-reminder workflow; retained but not called by scheduled automation. |
 | `auth_telegram_notifs.py` | Interactively creates or refreshes the Telegram session used by the notification importer. |
-| `chatgpt_convos_to_notes.mjs` | Exports active ChatGPT conversations; its incremental `--browser-actions` mode records pending conversations, opens each new final-response interactive HTML message and its downloaded local artifact once, and drains the configured browser-handoff project. |
+| `chatgpt_convos_to_notes.mjs` | Exports active ChatGPT conversations into the local append-only archive. |
 | `discord_notifs_to_notes.py` | Contains the Discord DM and mention importer; its runtime switch is currently off. |
 | `github_notifs_to_notes.py` | Saves unread GitHub notifications to the notes inbox, then marks them read. |
 | `linear_notifs_to_notes.py` | Contains a Linear notification importer, but is currently disabled by an immediate exit. |
 | `migrate_note_frontmatter_directives.py` | Moves legacy note directives into YAML frontmatter and removes obsolete todo blocks. |
 | `normalize_markdown_filenames.py` | Renames Markdown files to stable slugs and updates affected wikilinks. |
+| `open_chatgpt_conversations_in_brave.mjs` | Opens active ChatGPT conversations that Brave history does not show as viewed since their latest assistant response. |
 | `route_friend_discussion_ideas.py` | Classifies discussion ideas from a scratchpad and routes them into tagged friend notes. |
 | `select_infolio_relevance_articles.py` | Selects an unreviewed sample from a ranked Infolio article queue for scheduled analysis. |
 | `social_notifs_to_notes.py` | Collects X, LessWrong, and EthResearch notifications into the notes inbox. |

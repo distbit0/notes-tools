@@ -2,19 +2,16 @@
 
 ## 2026-07-17: Bound ChatGPT backend request volume
 
-- The separate 15-minute pending-conversation scan was removed after it repeatedly scanned roughly 1,600 conversations and triggered sustained HTTP 429 responses. Pending reminders are now derived only from new or changed conversations found by the browser-action scan, then handed to a local-only Python writer.
-- Browser actions run every four hours. Archive export remains at 03:00 and 15:00, and uses 100-conversation list pages so it retains complete cutoff coverage with fewer requests.
+- The separate 15-minute pending-conversation scan was removed after it repeatedly scanned roughly 1,600 conversations and triggered sustained HTTP 429 responses.
+- The pending-reminder writer is now retained but disabled. The Brave opener runs every four hours. Archive export remains at 03:00 and 15:00, and uses 100-conversation list pages so it retains complete cutoff coverage with fewer requests.
 - All direct ChatGPT backend work shares one client with 10–15 second pacing. A 429 is never retried: it records a shared 24-hour cooldown, terminates the triggering run visibly, and makes later invocations explicit zero-request no-ops until expiry.
 - The user chose to retain low-rate access to the unofficial consumer backend. Lower request volume reduces the observed failure mode but does not remove account or terms risk.
 
-## 2026-07-16: ChatGPT browser actions run independently
+## 2026-07-28: Brave history is the conversation-open ledger
 
-- A dedicated `--browser-actions` mode runs independently of the 03:00/15:00 archive export and its run gate.
-- It opens a conversation in Brave when the latest visible assistant message contains generated sandbox HTML or direct `text/html`, recording the assistant message ID in a separate browser-actions ledger. Each new matching assistant response opens once, including later visualizations in a conversation that opened previously.
-- Each matching message's HTML artifacts are saved under the configured `~/Downloads/chatgpt-html` directory and opened as local Brave tabs. Conversation-open, artifact-download, and artifact-open completion are persisted separately so retries resume only unfinished actions; unchanged runs make no artifact requests.
-- It also drains the configured `open_in_browser` project: each chat opens as a new Brave tab and is then removed from the project. The project remains the retry ledger if opening or removal fails.
-- Current archive Markdown rules out clear non-matches locally; possible matches and new or changed conversations are verified from the live conversation response.
-- Browser discovery reuses conversations embedded in the project sidebar and persists separate normal/project update watermarks. Watermarks advance only after an unrestricted successful run, so steady-state polling reads only the session, sidebar pages, and first normal-conversation page without risking gaps after partial or failed runs.
+- The four-hour opener scans all active normal and project conversations. A conversation absent from Brave history opens unconditionally; a visited conversation reopens only when its latest visible assistant message is more than ten minutes newer than its latest Brave visit.
+- The grace interval treats a response completed shortly after navigation as viewed. Brave history is the sole open ledger, so clearing or expiring history intentionally makes conversations eligible again.
+- The former `open_in_browser` project handoff, interactive-HTML download/open behavior, browser-action state, and pending-inbox integration were removed.
 
 ## 2026-07-14: ChatGPT conversation sync schedule
 

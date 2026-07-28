@@ -8,26 +8,6 @@ const REQUEST_RETRY_LIMIT = 3;
 const REQUEST_TIMEOUT_MS = 60_000;
 const RATE_LIMIT_STATE_VERSION = 1;
 const RATE_LIMIT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
-const UNREAD_ASYNC_STATUS = 4;
-const UNREAD_FIELDS = ["is_unread", "unread", "has_unread", "isUnread", "hasUnread"];
-const STATUS_FIELDS = [
-  "status",
-  "conversation_status",
-  "conversationStatus",
-  "last_message_status",
-  "lastMessageStatus",
-];
-const CUT_OFF_STATUSES = new Set([
-  "aborted",
-  "cancelled",
-  "canceled",
-  "cut_off",
-  "error",
-  "failed",
-  "in_progress",
-  "interrupted",
-]);
-
 export class UserFacingError extends Error {}
 class NonRetryableRequestError extends Error {}
 
@@ -386,84 +366,6 @@ function redactedRequestPath(requestUrl) {
   } catch {
     return "unparseable-request-url";
   }
-}
-
-export function pendingSignalFromListItem(item) {
-  const unread = unreadFlag(item);
-  return {
-    unreadKnown: unread.known,
-    unread: unread.value,
-    cutOff:
-      isCutOffStatus(statusValue(item)) ||
-      (item?.mapping ? detailCutOffReason(item) : false),
-  };
-}
-
-export function pendingRecordsFromCandidate(candidate, conversation) {
-  const latest = latestMessage(conversation);
-  const conversationId =
-    conversation?.conversation_id || conversation?.id || candidate.id;
-  const title = candidate.title || conversation?.title;
-  const records = [];
-  if (candidate.pendingSignal.unread) {
-    records.push({
-      conversationId,
-      reason: "unread",
-      title,
-      latestMessageId: latest?.id || "",
-    });
-  }
-  if (candidate.pendingSignal.cutOff || detailCutOffReason(conversation)) {
-    records.push({
-      conversationId,
-      reason: "cut_off",
-      title,
-      latestMessageId: latest?.id || "",
-    });
-  }
-  return records;
-}
-
-function unreadFlag(item) {
-  for (const field of UNREAD_FIELDS) {
-    const value = item?.[field];
-    if (typeof value === "boolean") return { known: true, value };
-  }
-  for (const field of ["async_status", "asyncStatus"]) {
-    if (Object.prototype.hasOwnProperty.call(item || {}, field)) {
-      return { known: true, value: Number(item[field]) === UNREAD_ASYNC_STATUS };
-    }
-  }
-  return { known: false, value: false };
-}
-
-function statusValue(object) {
-  for (const field of STATUS_FIELDS) {
-    const value = object?.[field];
-    if (typeof value === "string" && value.trim() !== "") return value.trim();
-  }
-  return "";
-}
-
-function isCutOffStatus(value) {
-  return CUT_OFF_STATUSES.has(String(value || "").trim().toLowerCase());
-}
-
-function detailCutOffReason(conversation) {
-  const latest = latestMessage(conversation);
-  if (!latest || latest?.author?.role !== "assistant") return false;
-  return isCutOffStatus(statusValue(latest) || latest?.status);
-}
-
-function latestMessage(conversation) {
-  const messages = Object.values(conversation?.mapping || {})
-    .map((node) => node?.message)
-    .filter((message) => message && typeof message === "object");
-  return messages.reduce((latest, message) => {
-    const latestTime = Number(latest?.create_time || 0);
-    const messageTime = Number(message?.create_time || 0);
-    return messageTime >= latestTime ? message : latest;
-  }, null);
 }
 
 function browserUserAgent() {

@@ -5,15 +5,9 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-  ChatGptClient,
-  lastAssistantInteractiveHtmlMessage,
   parseArgs,
-  runBrowserActions,
   syncChatGptConversations,
 } from "../chatgpt_convos_to_notes.mjs";
-
-const INTERACTIVE_HTML_CONVERSATION_ID = "6a574dc0-214c-83ea-ad0d-b10364460686";
-const EARLIER_HTML_ONLY_CONVERSATION_ID = "6a45cd8d-e73c-83ea-a0e5-2f6ec490018e";
 
 test("live ChatGPT sync exports one real conversation when explicitly enabled", async (t) => {
   if (process.env.CHATGPT_LIVE_TEST !== "1") {
@@ -52,90 +46,4 @@ test("live ChatGPT sync exports one real conversation when explicitly enabled", 
   const markdown = await readFile(markdownPath, "utf8");
   assert.match(markdown, /^---\n/);
   assert.match(markdown, /chatgpt_url: "https:\/\/chatgpt\.com\/c\//);
-});
-
-test("live browser actions run through their independent ledger", async (t) => {
-  if (process.env.CHATGPT_LIVE_TEST !== "1") {
-    t.skip("set CHATGPT_LIVE_TEST=1 to run against the live ChatGPT account");
-    return;
-  }
-
-  const options = parseArgs([
-    "--browser-actions",
-    "--request-delay-ms",
-    "4000",
-    "--jitter-ms",
-    "1000",
-  ]);
-  const result = await runBrowserActions(options);
-  assert.equal(result.status, "success");
-  assert.equal(
-    result.summary.browserQueueTabsOpened <=
-      result.summary.projectConversationsRemoved,
-    true,
-  );
-  assert.equal(Number.isInteger(result.summary.apiRequests), true);
-
-  const browserState = JSON.parse(
-    await readFile(options.browserStatePath, "utf8"),
-  );
-  const interactiveRecord =
-    browserState.conversations[INTERACTIVE_HTML_CONVERSATION_ID];
-  assert.equal(Number.isFinite(browserState.scanWatermarks.normal), true);
-  assert.equal(typeof browserState.scanWatermarks.projects, "object");
-  assert.equal(
-    Object.keys(interactiveRecord.interactiveHtmlOpenedMessages).length >= 1,
-    true,
-  );
-  for (const messageId of Object.keys(
-    interactiveRecord.interactiveHtmlOpenedMessages,
-  )) {
-    const artifactRecords =
-      interactiveRecord.interactiveHtmlArtifacts[messageId];
-    assert.equal(Object.keys(artifactRecords).length >= 1, true);
-    for (const artifactRecord of Object.values(artifactRecords)) {
-      assert.equal(typeof artifactRecord.downloadedAt, "string");
-      assert.equal(typeof artifactRecord.openedAt, "string");
-      const html = await readFile(artifactRecord.localPath, "utf8");
-      assert.match(html, /<!doctype\s+html|<html\b/i);
-    }
-  }
-  assert.equal("interactiveHtmlOpenedAt" in interactiveRecord, false);
-});
-
-test("live detector requires interactive HTML in the latest assistant message", async (t) => {
-  if (process.env.CHATGPT_LIVE_TEST !== "1") {
-    t.skip("set CHATGPT_LIVE_TEST=1 to run against the live ChatGPT account");
-    return;
-  }
-
-  const client = new ChatGptClient(parseArgs([]));
-  await client.initialize();
-  const interactiveConversation = await client.fetchBackendJson(
-    `/backend-api/conversation/${INTERACTIVE_HTML_CONVERSATION_ID}`,
-  );
-  const earlierHtmlOnlyConversation = await client.fetchBackendJson(
-    `/backend-api/conversation/${EARLIER_HTML_ONLY_CONVERSATION_ID}`,
-  );
-
-  const interactiveMessage = lastAssistantInteractiveHtmlMessage(
-    interactiveConversation,
-  );
-  assert.notEqual(interactiveMessage, null);
-  assert.equal(typeof interactiveMessage.id, "string");
-  assert.equal(interactiveMessage.createdAtMs > 0, true);
-  assert.equal(interactiveMessage.artifacts.length >= 1, true);
-  assert.equal(
-    interactiveMessage.artifacts.every(
-      (artifact) =>
-        artifact.sourceType === "sandbox" &&
-        artifact.sandboxPath.startsWith("/mnt/data/") &&
-        artifact.sandboxPath.endsWith(".html"),
-    ),
-    true,
-  );
-  assert.equal(
-    lastAssistantInteractiveHtmlMessage(earlierHtmlOnlyConversation),
-    null,
-  );
 });
