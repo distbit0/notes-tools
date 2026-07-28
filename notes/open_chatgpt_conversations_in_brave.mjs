@@ -257,7 +257,7 @@ async function openChatGptConversations(options) {
   summary.urlsQueued = urlsToQueue.length;
   summary.outputUrls = await appendUniqueConversationUrls(
     options.outputPath,
-    urlsToQueue,
+    [...urlsToQueue].reverse(),
   );
   if (options.maxConversations === null) {
     await saveScanState(options.scanStatePath, {
