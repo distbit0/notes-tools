@@ -210,7 +210,12 @@ async function openChatGptConversations(options) {
       )
     : new Set();
   summary.recoveredUrls = recoveredConversationIds.size;
-  const urlsToQueue = [];
+  const activeConversationIds = new Set(
+    candidates.map((candidate) => candidate.id),
+  );
+  const urlsToQueue = [...recoveredConversationIds]
+    .filter((conversationId) => !activeConversationIds.has(conversationId))
+    .map(conversationUrl);
 
   for (const candidate of candidates) {
     if (recoveredConversationIds.has(candidate.id)) {
@@ -287,9 +292,6 @@ async function readRecoveryList(recoveryListPath) {
 }
 
 function resolveConversationReferences(candidates, references) {
-  const candidatesById = new Map(
-    candidates.map((candidate) => [candidate.id, candidate]),
-  );
   const candidatesByTitle = new Map();
   for (const candidate of candidates) {
     const matches = candidatesByTitle.get(candidate.title) || [];
@@ -302,12 +304,6 @@ function resolveConversationReferences(candidates, references) {
   for (const reference of references) {
     const conversationId = conversationIdFromUrl(reference);
     if (conversationId) {
-      if (!candidatesById.has(conversationId)) {
-        resolutionErrors.push(
-          `Recovered URL does not identify an active conversation: ${reference}`,
-        );
-        continue;
-      }
       resolvedIds.add(conversationId);
       continue;
     }
