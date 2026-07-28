@@ -11,9 +11,11 @@ from automation.start_random_todo import (
     DEFAULT_INBOX,
     Herdr,
     add_session_annotation,
+    find_live_session_panes,
     live_session_panes,
     load_todos,
     notes_workspace,
+    process_resumes_session,
 )
 
 
@@ -90,3 +92,24 @@ def test_live_session_and_notes_workspace_detection() -> None:
 
     session_id = str(codex_panes[0]["agent_session"]["value"])
     assert codex_panes[0] in live_session_panes(snapshot, session_id)
+
+
+def test_live_resumed_codex_process_is_detected() -> None:
+    herdr = Herdr(DEFAULT_HERDR_BIN, DEFAULT_HERDR_LAUNCHER)
+    snapshot = live_snapshot()
+    for pane in snapshot["panes"]:
+        if pane.get("agent") != "codex":
+            continue
+        process_info = herdr.run_json(
+            ["pane", "process-info", "--pane", str(pane["pane_id"])]
+        )["result"]["process_info"]
+        for process in process_info["foreground_processes"]:
+            arguments = process.get("argv", [])
+            for index, argument in enumerate(arguments[:-1]):
+                if argument != "resume":
+                    continue
+                session_id = str(arguments[index + 1])
+                assert process_resumes_session(process_info, session_id)
+                assert pane in find_live_session_panes(herdr, snapshot, session_id)
+                return
+    pytest.skip("Herdr has no live resumed Codex process")

@@ -123,7 +123,7 @@ class Herdr:
         self.binary = binary
         self.launcher = launcher
 
-    def run_json(self, arguments: list[str]) -> dict:
+    def run(self, arguments: list[str]) -> str:
         operation = f"herdr {' '.join(arguments[:2])}"
         try:
             result = subprocess.run(
@@ -136,9 +136,15 @@ class Herdr:
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise HerdrError(f"{operation} could not run: {exc}") from exc
         output = result.stdout or result.stderr
-        if result.returncode != 0 and not output:
+        if result.returncode != 0:
+            if output:
+                parse_herdr_payload(output, operation)
             raise HerdrError(f"{operation} exited with status {result.returncode}")
-        return parse_herdr_payload(output, operation)
+        return output
+
+    def run_json(self, arguments: list[str]) -> dict:
+        operation = f"herdr {' '.join(arguments[:2])}"
+        return parse_herdr_payload(self.run(arguments), operation)
 
     def snapshot(self) -> dict:
         payload = self.run_json(["api", "snapshot"])
@@ -201,6 +207,55 @@ def live_session_panes(snapshot: dict, session_id: str) -> list[dict]:
         and pane.get("agent_session", {}).get("kind") == "id"
         and pane.get("agent_session", {}).get("value") == session_id
     ]
+
+
+def process_resumes_session(process_info: dict, session_id: str) -> bool:
+    foreground_processes = process_info.get("foreground_processes")
+    if not isinstance(foreground_processes, list):
+        raise HerdrError("Herdr process info omitted foreground_processes")
+    for process in foreground_processes:
+        arguments = process.get("argv") if isinstance(process, dict) else None
+        if not isinstance(arguments, list):
+            continue
+        if any(
+            argument == "resume" and arguments[index + 1] == session_id
+            for index, argument in enumerate(arguments[:-1])
+        ):
+            return True
+    return False
+
+
+def pane_resumes_session(herdr: Herdr, pane_id: str, session_id: str) -> bool:
+    result = result_object(
+        herdr.run_json(["pane", "process-info", "--pane", pane_id])
+    )
+    process_info = result.get("process_info")
+    if not isinstance(process_info, dict):
+        raise HerdrError("Herdr did not return pane process info")
+    return process_resumes_session(process_info, session_id)
+
+
+def find_live_session_panes(
+    herdr: Herdr,
+    snapshot: dict,
+    session_id: str,
+) -> list[dict]:
+    matches = live_session_panes(snapshot, session_id)
+    panes = snapshot.get("panes")
+    if not isinstance(panes, list):
+        raise HerdrError("Herdr snapshot omitted panes")
+    matched_pane_ids = {str(pane["pane_id"]) for pane in matches}
+    for pane in panes:
+        if (
+            not isinstance(pane, dict)
+            or pane.get("agent") != "codex"
+            or str(pane.get("pane_id")) in matched_pane_ids
+        ):
+            continue
+        pane_id = str(pane["pane_id"])
+        if pane_resumes_session(herdr, pane_id, session_id):
+            matches.append(pane)
+    return matches
 
 
 def notes_workspace(snapshot: dict) -> dict | None:
@@ -299,6 +354,13 @@ def start_codex(
     if initial_prompt:
         herdr.run_json(["agent", "prompt", pane_id, initial_prompt])
 
+    if session_id:
+        if not pane_resumes_session(herdr, pane_id, session_id):
+            raise HerdrError(
+                f"the started Codex process did not resume session {session_id}"
+            )
+        return session_id
+
     session_ready_deadline = time.monotonic() + 30
     while True:
         agent = result_object(herdr.run_json(["agent", "get", pane_id])).get("agent")
@@ -337,7 +399,7 @@ def close_new_tab(herdr: Herdr, tab_id: str) -> str | None:
 def kickoff(todo: Todo, inbox_path: Path, herdr: Herdr) -> dict:
     snapshot = herdr.ensure_snapshot()
     if todo.session_id:
-        matching_panes = live_session_panes(snapshot, todo.session_id)
+        matching_panes = find_live_session_panes(herdr, snapshot, todo.session_id)
         if len(matching_panes) > 1:
             raise HerdrError(
                 f"multiple Herdr tabs own Codex session {todo.session_id}"
