@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import hashlib
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+from typing import Callable
 
 from loguru import logger
+
+
+NOTIFICATION_IDENTITY_RE = re.compile(
+    r"<!-- notif-identity:(?P<digest>[0-9a-f]{64}) -->"
+)
 
 
 def terminal_safe_markdown_path(path: Path) -> Path:
@@ -58,6 +67,64 @@ def append_markdown_lines(path: Path, lines: list[str]) -> None:
         handle.write("\n\n")
         handle.write("\n".join(lines))
         handle.write("\n\n")
+
+
+def write_text_atomic(path: Path, text: str) -> None:
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.parent, delete=False
+    ) as temp_file:
+        temp_file.write(text)
+        temp_path = Path(temp_file.name)
+    temp_path.replace(path)
+
+
+def notification_identity_digest(identity: str) -> str:
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def replace_keyed_notification_lines(
+    path: Path,
+    lines_by_identity: dict[str, str],
+    *,
+    legacy_identity_for_line: Callable[[str], str | None] | None = None,
+) -> list[str]:
+    if not lines_by_identity:
+        return []
+    ensure_terminal_safe_markdown_path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Notes file not found: {path}")
+
+    replacement_identities = lines_by_identity.keys()
+    replacement_digests = {
+        notification_identity_digest(identity) for identity in replacement_identities
+    }
+    retained_lines: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        marker = NOTIFICATION_IDENTITY_RE.search(line)
+        if marker and marker.group("digest") in replacement_digests:
+            continue
+        if (
+            legacy_identity_for_line is not None
+            and legacy_identity_for_line(line) in replacement_identities
+        ):
+            continue
+        retained_lines.append(line)
+
+    while retained_lines and not retained_lines[-1].strip():
+        retained_lines.pop()
+
+    rendered_lines = [
+        f"{line} <!-- notif-identity:{notification_identity_digest(identity)} -->"
+        for identity, line in lines_by_identity.items()
+    ]
+    updated_text = (
+        "\n".join(retained_lines)
+        + "\n\n"
+        + "\n".join(rendered_lines)
+        + "\n\n"
+    )
+    write_text_atomic(path, updated_text)
+    return list(lines_by_identity.values())
 
 
 def normalize_notification_name(name: str, *, field_name: str) -> str:

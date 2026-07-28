@@ -322,6 +322,7 @@ def collect_ethresearch_notifications(
                 label=label,
                 url=url,
                 cursor=cursor,
+                conversation_id=pm_topic_id,
             )
         )
 
@@ -402,6 +403,7 @@ def collect_ethresearch_private_messages(
                 ),
                 url=url,
                 cursor=cursor,
+                conversation_id=cursor.record_key,
             )
         )
 

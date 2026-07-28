@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from loguru import logger
 
 from ethresearch_social_notifs import collect_ethresearch_all
 from lesswrong_social_notifs import collect_lesswrong_all
 from notes_utils import (
-    append_markdown_lines,
     configure_logger,
     format_notification_note_line,
+    replace_keyed_notification_lines,
     send_persistent_desktop_notification,
 )
 from social_notif_common import (
@@ -26,6 +28,75 @@ from x_social_notifs import collect_x_notifications
 NOTES_FILE = Path.home() / "notes/inbox-index.md"
 LOG_PATH = Path(__file__).with_name("social-notifs.log")
 STATE_PATH = Path.home() / ".local/state/social-notifs-state.json"
+SOCIAL_NOTIFICATION_LINE_RE = re.compile(
+    r"\s*(?:[-*+]\s+)?new notif: "
+    r"(?P<source>x|lesswrong|ethresearch): ",
+    re.IGNORECASE,
+)
+MARKDOWN_URL_RE = re.compile(r"\]\((?P<url>https?://[^)\s]+)\)")
+
+
+def social_conversation_identity(source: str, conversation_id: str) -> str:
+    return f"social-conversation:{source.lower()}:{conversation_id}"
+
+
+def conversation_id_from_url(source: str, url: str) -> str | None:
+    parsed_url = urlparse(url)
+    path_parts = parsed_url.path.strip("/").split("/")
+    if source == "x" and parsed_url.netloc == "x.com":
+        if len(path_parts) == 2 and path_parts[0] == "messages":
+            return path_parts[1]
+    elif source == "lesswrong" and parsed_url.netloc == "www.lesswrong.com":
+        conversation_ids = parse_qs(parsed_url.query).get("conversation")
+        if parsed_url.path == "/inbox" and conversation_ids:
+            return conversation_ids[0]
+    elif source == "ethresearch" and parsed_url.netloc == "ethresear.ch":
+        if len(path_parts) >= 3 and path_parts[0] == "t":
+            return path_parts[2]
+    return None
+
+
+def legacy_social_notification_identity(line: str) -> str | None:
+    line_match = SOCIAL_NOTIFICATION_LINE_RE.match(line)
+    url_match = MARKDOWN_URL_RE.search(line)
+    if line_match is None or url_match is None:
+        return None
+
+    source = line_match.group("source").lower()
+    conversation_id = conversation_id_from_url(source, url_match.group("url"))
+    if conversation_id is None:
+        return None
+    return social_conversation_identity(source, conversation_id)
+
+
+def social_notification_identity(notification: SocialNotification) -> str:
+    if notification.conversation_id is not None:
+        return social_conversation_identity(
+            notification.source, notification.conversation_id
+        )
+    return (
+        f"social-event:{notification.source.lower()}:{notification.kind}:"
+        f"{notification.cursor.record_key}:{notification.cursor.item_id}"
+    )
+
+
+def save_social_notifications(
+    notes_file: Path, notifications: list[SocialNotification]
+) -> list[str]:
+    lines_by_identity: dict[str, str] = {}
+    for notification in notifications:
+        identity = social_notification_identity(notification)
+        lines_by_identity.pop(identity, None)
+        lines_by_identity[identity] = format_notification_note_line(
+            source=notification.source.lower(),
+            label=notification.label,
+            url=notification.url,
+        )
+    return replace_keyed_notification_lines(
+        notes_file,
+        lines_by_identity,
+        legacy_identity_for_line=legacy_social_notification_identity,
+    )
 
 
 def collect_source_notifications(
@@ -69,17 +140,7 @@ def run() -> int:
                 category=notification.source.lower(),
                 on_click_url=notification.url,
             )
-        append_markdown_lines(
-            NOTES_FILE,
-            [
-                format_notification_note_line(
-                    source=notification.source.lower(),
-                    label=notification.label,
-                    url=notification.url,
-                )
-                for notification in notifications
-            ],
-        )
+        save_social_notifications(NOTES_FILE, notifications)
         logger.info(f"Processed {len(notifications)} social notifications")
     else:
         logger.info("No new X, LessWrong, or EthResearch notifications")

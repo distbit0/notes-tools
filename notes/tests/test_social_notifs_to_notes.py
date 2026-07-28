@@ -16,6 +16,7 @@ import ethresearch_social_notifs  # noqa: E402
 import lesswrong_social_notifs  # noqa: E402
 import notes_utils  # noqa: E402
 import social_notif_common  # noqa: E402
+import social_notifs_to_notes  # noqa: E402
 import x_social_notifs  # noqa: E402
 
 
@@ -40,6 +41,52 @@ def assert_well_formed_notifications(
         assert notification.cursor.record_key
         assert notification.cursor.timestamp_ms >= 0
         assert notification.cursor.item_id
+        if notification.kind in {"dm", "private_message"}:
+            assert notification.conversation_id
+
+
+def real_x_dm_notification() -> social_notif_common.SocialNotification:
+    state = social_notif_common.load_state(social_notifs_to_notes.STATE_PATH)
+    cursor = next(iter(state["x_dm"].values()))
+    url = f"https://x.com/messages/{cursor.record_key}"
+    return social_notif_common.SocialNotification(
+        source="X",
+        kind="dm",
+        label=url,
+        url=url,
+        cursor=cursor,
+        conversation_id=cursor.record_key,
+    )
+
+
+def test_save_social_notifications_replaces_legacy_entry_for_real_conversation(
+    tmp_path: Path,
+) -> None:
+    notification = real_x_dm_notification()
+    notes_file = tmp_path / "inbox-index.md"
+    source_heading = (
+        (Path.home() / "notes/inbox-index.md")
+        .read_text(encoding="utf-8")
+        .splitlines()[0]
+    )
+    legacy_line = notes_utils.format_notification_note_line(
+        source="x",
+        label=notification.label,
+        url=notification.url,
+    )
+    notes_file.write_text(
+        f"{source_heading}\n\n- {legacy_line}\n",
+        encoding="utf-8",
+    )
+
+    saved_lines = social_notifs_to_notes.save_social_notifications(
+        notes_file, [notification]
+    )
+
+    inbox_text = notes_file.read_text(encoding="utf-8")
+    assert saved_lines == [legacy_line]
+    assert inbox_text.count("new notif: x:") == 1
+    assert notes_utils.NOTIFICATION_IDENTITY_RE.search(inbox_text)
 
 
 @live_social_notifications

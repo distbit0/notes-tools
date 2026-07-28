@@ -4,13 +4,16 @@ import hashlib
 import html
 import os
 import re
-import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
-from notes_utils import ensure_terminal_safe_markdown_path, format_notification_note_line
+from notes_utils import (
+    format_notification_note_line,
+    replace_keyed_notification_lines,
+    write_text_atomic,
+)
 
 
 THREAD_MARKER_RE = re.compile(
@@ -102,15 +105,6 @@ def find_existing_message_note(
         ):
             return path
     return None
-
-
-def write_text_atomic(path: Path, text: str) -> None:
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", dir=path.parent, delete=False
-    ) as temp_file:
-        temp_file.write(text)
-        temp_path = Path(temp_file.name)
-    temp_path.replace(path)
 
 
 def ensure_message_note(path: Path, entry: MessageLogEntry) -> None:
@@ -267,37 +261,18 @@ def notification_line(entry: MessageLogEntry, note_title: str) -> str:
     return f"{preview_line} {wikilink(note_title)}"
 
 
-def replace_conversation_notifications(
-    path: Path, inbox_lines_by_note_title: dict[str, str]
-) -> None:
-    if not inbox_lines_by_note_title:
-        return
-    ensure_terminal_safe_markdown_path(path)
-    if not path.exists():
-        raise FileNotFoundError(f"Notes file not found: {path}")
+def message_notification_identity(note_title: str) -> str:
+    return f"message-note:{note_title}"
 
-    replaced_note_titles = inbox_lines_by_note_title.keys()
-    retained_lines = [
-        line
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if not (
-            NOTIFICATION_LINE_RE.match(line)
-            and any(
-                wikilink_target(match.group(1)) in replaced_note_titles
-                for match in WIKILINK_RE.finditer(line)
-            )
-        )
-    ]
-    while retained_lines and not retained_lines[-1].strip():
-        retained_lines.pop()
 
-    updated_text = (
-        "\n".join(retained_lines)
-        + "\n\n"
-        + "\n".join(inbox_lines_by_note_title.values())
-        + "\n\n"
-    )
-    write_text_atomic(path, updated_text)
+def legacy_message_notification_identity(line: str) -> str | None:
+    if not NOTIFICATION_LINE_RE.match(line):
+        return None
+    for match in WIKILINK_RE.finditer(line):
+        note_title = wikilink_target(match.group(1))
+        if note_title.startswith("msg - "):
+            return message_notification_identity(note_title)
+    return None
 
 
 def record_changed_message_notes(paths: Iterable[Path]) -> None:
@@ -319,19 +294,24 @@ def save_message_notifications(
     notes_root: Path,
     entries: Iterable[MessageLogEntry],
 ) -> list[str]:
-    inbox_lines_by_note_title: dict[str, str] = {}
+    inbox_lines_by_identity: dict[str, str] = {}
     changed_message_notes: list[Path] = []
     for entry in entries:
         note_path = message_note_path(notes_root, entry)
         ensure_message_note(note_path, entry)
         if append_message_block(note_path, entry):
             changed_message_notes.append(note_path)
-        inbox_lines_by_note_title.pop(note_path.stem, None)
-        inbox_lines_by_note_title[note_path.stem] = notification_line(
+        identity = message_notification_identity(note_path.stem)
+        inbox_lines_by_identity.pop(identity, None)
+        inbox_lines_by_identity[identity] = notification_line(
             entry, note_path.stem
         )
 
-    replace_conversation_notifications(notes_file, inbox_lines_by_note_title)
+    inbox_lines = replace_keyed_notification_lines(
+        notes_file,
+        inbox_lines_by_identity,
+        legacy_identity_for_line=legacy_message_notification_identity,
+    )
     record_changed_message_notes(changed_message_notes)
     delete_unlinked_message_notes(notes_root)
-    return list(inbox_lines_by_note_title.values())
+    return inbox_lines

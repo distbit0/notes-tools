@@ -52,6 +52,7 @@ class SocialNotification:
     label: str
     url: str
     cursor: ItemCursor
+    conversation_id: str | None = None
 
 
 def require_non_empty_string(value: Any, *, field_name: str) -> str:

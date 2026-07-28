@@ -442,6 +442,7 @@ def collect_x_dms(
                 ),
                 url=url,
                 cursor=cursor,
+                conversation_id=cursor.record_key,
             )
         )
 

@@ -293,6 +293,7 @@ def collect_lesswrong_dms(
                 ),
                 url=url,
                 cursor=cursor,
+                conversation_id=cursor.record_key,
             )
         )
 
