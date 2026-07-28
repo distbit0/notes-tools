@@ -7,11 +7,12 @@
 - All direct ChatGPT backend work shares one client with 10–15 second pacing. A 429 is never retried: it records a shared 24-hour cooldown, terminates the triggering run visibly, and makes later invocations explicit zero-request no-ops until expiry.
 - The user chose to retain low-rate access to the unofficial consumer backend. Lower request volume reduces the observed failure mode but does not remove account or terms risk.
 
-## 2026-07-28: Brave history is the conversation-open ledger
+## 2026-07-28: Brave history is the conversation-view ledger
 
 - The opener performs one complete active-conversation scan when its dedicated ledger is absent. Each later four-hour run stops normal and per-project pagination at the last fully successful scan watermarks; failed or artificially limited runs never advance them.
-- A conversation absent from Brave history opens unconditionally; a visited conversation reopens only when its latest visible assistant message is more than ten minutes newer than its latest Brave visit.
+- A conversation absent from Brave history is queued unconditionally; a visited conversation is queued only when its latest visible assistant message is more than ten minutes newer than its latest Brave visit.
 - The grace interval treats a response completed shortly after navigation as viewed. Brave history is the sole open ledger, so clearing or expiring history intentionally makes conversations eligible again.
+- Qualifying URLs are appended uniquely to a mode-0600 text file rather than opened directly because launching the initial backlog crashed Brave. The user removes processed URLs from that file; a later update can then queue the same conversation again.
 - The former `open_in_browser` project handoff, interactive-HTML download/open behavior, browser-action state, and pending-inbox integration were removed.
 
 ## 2026-07-14: ChatGPT conversation sync schedule

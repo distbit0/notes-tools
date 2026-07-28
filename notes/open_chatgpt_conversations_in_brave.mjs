@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import {
   copyFile,
   mkdir,
@@ -29,7 +29,6 @@ const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = path.dirname(SCRIPT_PATH);
 const PROJECT_ROOT = path.dirname(SCRIPT_DIR);
 const HOME_DIR = os.homedir();
-const CONFIG_PATH = path.join(SCRIPT_DIR, "config.json");
 const DEFAULT_BRAVE_ROOT = path.join(
   HOME_DIR,
   ".config/BraveSoftware/Brave-Browser",
@@ -43,18 +42,27 @@ const DEFAULT_SCAN_STATE_PATH = path.join(
   HOME_DIR,
   ".local/state/open-chatgpt-conversations-in-brave/state.json",
 );
+const DEFAULT_OUTPUT_PATH = path.join(
+  HOME_DIR,
+  ".local/state/open-chatgpt-conversations-in-brave/conversations-to-open.txt",
+);
 const HISTORY_GRACE_MS = 10 * 60 * 1000;
 const CHROME_EPOCH_OFFSET_MS = 11_644_473_600_000;
 
 function usage() {
   return `Usage: open_chatgpt_conversations_in_brave.mjs [options]
 
-Open active ChatGPT conversations that have not been viewed in Brave since
-their latest assistant response.
+List active ChatGPT conversations that have not been viewed in Brave since
+their latest assistant response. URLs are written to a persistent, deduplicated
+text file; this script never opens browser tabs.
 
 Options:
   --state <file>             Successful-scan ledger
                              (default: ${DEFAULT_SCAN_STATE_PATH})
+  --output <file>            Text file receiving conversation URLs
+                             (default: ${DEFAULT_OUTPUT_PATH})
+  --include-titles <file>    Also include conversations whose exact titles are
+                             listed in this file; every title must match once
   --profile <name>           Brave profile name (default: ${DEFAULT_BRAVE_PROFILE})
   --brave-root <dir>         Brave user data root (default: ${DEFAULT_BRAVE_ROOT})
   --bearer <token>           Use this bearer token instead of Brave cookies
@@ -68,28 +76,14 @@ Environment:
 `;
 }
 
-function loadConfiguration() {
-  const configuration = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
-  const conversationSync = configuration.chatgptConversationSync;
-  if (
-    !conversationSync ||
-    typeof conversationSync.braveExecutable !== "string" ||
-    !conversationSync.braveExecutable.trim()
-  ) {
-    throw new UserFacingError(
-      "notes/config.json must define chatgptConversationSync.braveExecutable.",
-    );
-  }
-  return conversationSync;
-}
-
-function parseArgs(argv, conversationSync = loadConfiguration()) {
+function parseArgs(argv) {
   const options = {
     braveRoot: DEFAULT_BRAVE_ROOT,
     braveProfile: DEFAULT_BRAVE_PROFILE,
-    braveExecutable: conversationSync.braveExecutable,
     bearer: process.env.CHATGPT_BEARER_TOKEN || "",
+    includeTitlesPath: null,
     maxConversations: null,
+    outputPath: DEFAULT_OUTPUT_PATH,
     requestDelayMs: 10_000,
     jitterMs: 5000,
     projectRoot: PROJECT_ROOT,
@@ -112,6 +106,10 @@ function parseArgs(argv, conversationSync = loadConfiguration()) {
       options.help = true;
     } else if (arg === "--state") {
       options.scanStatePath = path.resolve(value());
+    } else if (arg === "--output") {
+      options.outputPath = path.resolve(value());
+    } else if (arg === "--include-titles") {
+      options.includeTitlesPath = path.resolve(value());
     } else if (arg === "--profile") {
       options.braveProfile = value();
     } else if (arg === "--brave-root") {
@@ -149,12 +147,24 @@ function parseNonNegativeInteger(flag, rawValue) {
 
 async function openChatGptConversations(options) {
   const scanState = await loadScanState(options.scanStatePath);
+  if (options.includeTitlesPath && scanState) {
+    throw new UserFacingError(
+      "--include-titles requires a full scan with no existing scan ledger.",
+    );
+  }
+  if (options.includeTitlesPath && options.maxConversations !== null) {
+    throw new UserFacingError(
+      "--include-titles cannot be combined with --max-conversations.",
+    );
+  }
   const summary = {
     scanMode: scanState ? "incremental" : "full",
     discovered: 0,
     historyEntries: 0,
     conversationDetailsChecked: 0,
-    tabsOpened: 0,
+    recoveredUrls: 0,
+    urlsQueued: 0,
+    outputUrls: 0,
     skippedAlreadyViewed: 0,
     apiRequests: 0,
   };
@@ -182,13 +192,26 @@ async function openChatGptConversations(options) {
     scanState?.scanWatermarks,
   );
   summary.discovered = candidates.length;
+  const recoveredConversationIds = options.includeTitlesPath
+    ? resolveConversationTitles(
+        candidates,
+        await readTitleList(options.includeTitlesPath),
+      )
+    : new Set();
+  summary.recoveredUrls = recoveredConversationIds.size;
+  const urlsToQueue = [];
 
   for (const candidate of candidates) {
+    if (recoveredConversationIds.has(candidate.id)) {
+      urlsToQueue.push(conversationUrl(candidate.id));
+      console.log(`Queued recovered conversation: ${candidate.title}`);
+      continue;
+    }
+
     const lastOpenedAtMs = lastOpenedByConversation.get(candidate.id);
     if (lastOpenedAtMs === undefined) {
-      openBraveTab(options, candidate.id);
-      summary.tabsOpened += 1;
-      console.log(`Opened never-visited conversation: ${candidate.title}`);
+      urlsToQueue.push(conversationUrl(candidate.id));
+      console.log(`Queued never-visited conversation: ${candidate.title}`);
       continue;
     }
 
@@ -208,12 +231,18 @@ async function openChatGptConversations(options) {
       continue;
     }
 
-    openBraveTab(options, candidate.id);
-    summary.tabsOpened += 1;
-    console.log(`Opened conversation with a newer assistant reply: ${candidate.title}`);
+    urlsToQueue.push(conversationUrl(candidate.id));
+    console.log(
+      `Queued conversation with a newer assistant reply: ${candidate.title}`,
+    );
   }
 
   summary.apiRequests = client.requestCount;
+  summary.urlsQueued = urlsToQueue.length;
+  summary.outputUrls = await appendUniqueConversationUrls(
+    options.outputPath,
+    urlsToQueue,
+  );
   if (options.maxConversations === null) {
     await saveScanState(options.scanStatePath, {
       version: 1,
@@ -222,6 +251,72 @@ async function openChatGptConversations(options) {
     });
   }
   return { status: "success", summary };
+}
+
+async function readTitleList(titleListPath) {
+  if (!existsSync(titleListPath)) {
+    throw new UserFacingError(`Conversation title list not found: ${titleListPath}`);
+  }
+  const titles = (await readFile(titleListPath, "utf8"))
+    .split(/\r?\n/)
+    .filter(Boolean);
+  if (titles.length === 0) {
+    throw new UserFacingError(`Conversation title list is empty: ${titleListPath}`);
+  }
+  if (new Set(titles).size !== titles.length) {
+    throw new UserFacingError(
+      `Conversation title list contains duplicate titles: ${titleListPath}`,
+    );
+  }
+  return titles;
+}
+
+function resolveConversationTitles(candidates, titles) {
+  const candidatesByTitle = new Map();
+  for (const candidate of candidates) {
+    const matches = candidatesByTitle.get(candidate.title) || [];
+    matches.push(candidate);
+    candidatesByTitle.set(candidate.title, matches);
+  }
+
+  const resolvedIds = new Set();
+  for (const title of titles) {
+    const matches = candidatesByTitle.get(title) || [];
+    if (matches.length !== 1) {
+      throw new UserFacingError(
+        `Recovered title must match exactly one active conversation; ` +
+          `${JSON.stringify(title)} matched ${matches.length}.`,
+      );
+    }
+    resolvedIds.add(matches[0].id);
+  }
+  return resolvedIds;
+}
+
+async function appendUniqueConversationUrls(outputPath, urls) {
+  const existingUrls = existsSync(outputPath)
+    ? (await readFile(outputPath, "utf8")).split(/\r?\n/).filter(Boolean)
+    : [];
+  for (const url of existingUrls) {
+    if (!conversationIdFromUrl(url)) {
+      throw new UserFacingError(
+        `Conversation output contains an invalid URL: ${outputPath}`,
+      );
+    }
+  }
+
+  const combinedUrls = [...new Set([...existingUrls, ...urls])];
+  await mkdir(path.dirname(outputPath), { recursive: true });
+  const temporaryPath = path.join(
+    path.dirname(outputPath),
+    `.${path.basename(outputPath)}.${process.pid}.${Date.now()}.tmp`,
+  );
+  await writeFile(temporaryPath, `${combinedUrls.join("\n")}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  await rename(temporaryPath, outputPath);
+  return combinedUrls.length;
 }
 
 async function loadScanState(scanStatePath) {
@@ -401,21 +496,8 @@ function shouldOpenConversation(latestAssistantMessageAtMs, lastOpenedAtMs) {
   );
 }
 
-function openBraveTab(options, conversationId) {
-  const conversationUrl = `https://chatgpt.com/c/${encodeURIComponent(
-    conversationId,
-  )}`;
-  const result = spawnSync(
-    options.braveExecutable,
-    [`--profile-directory=${options.braveProfile}`, "--new-tab", conversationUrl],
-    { encoding: "utf8" },
-  );
-  if (result.status === 0) return;
-
-  const detail = (result.stderr || result.error?.message || "unknown error").trim();
-  throw new UserFacingError(
-    `Could not open ChatGPT conversation in Brave: ${detail}`,
-  );
+function conversationUrl(conversationId) {
+  return `https://chatgpt.com/c/${encodeURIComponent(conversationId)}`;
 }
 
 async function main() {
@@ -432,7 +514,10 @@ async function main() {
       `Discovered: ${result.summary.discovered}`,
       `Brave history entries: ${result.summary.historyEntries}`,
       `Conversation details checked: ${result.summary.conversationDetailsChecked}`,
-      `Tabs opened: ${result.summary.tabsOpened}`,
+      `Recovered URLs queued: ${result.summary.recoveredUrls}`,
+      `URLs queued this run: ${result.summary.urlsQueued}`,
+      `URLs in output file: ${result.summary.outputUrls}`,
+      `Output file: ${options.outputPath}`,
       `Skipped already viewed: ${result.summary.skippedAlreadyViewed}`,
       `API requests: ${result.summary.apiRequests}`,
       ...(result.summary.rateLimitedUntil
@@ -455,6 +540,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === SCRIPT_PATH) {
 
 export {
   conversationIdFromUrl,
+  appendUniqueConversationUrls,
   latestVisibleAssistantMessageTimeMs,
   loadScanState,
   normalizeScanWatermarks,
@@ -462,5 +548,6 @@ export {
   parseArgs,
   queryConversationHistory,
   readBraveConversationHistory,
+  resolveConversationTitles,
   shouldOpenConversation,
 };
