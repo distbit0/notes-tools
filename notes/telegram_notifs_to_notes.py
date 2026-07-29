@@ -45,6 +45,7 @@ TELEGRAM_AUTH_COMMAND = (
 NOTES_FILE = Path.home() / "notes/inbox-index.md"
 LOG_PATH = Path(__file__).with_name("telegram-notifs.log")
 STATE_PATH = Path.home() / ".local/state/telegram-notifs-state.json"
+REAUTH_NOTICE_PATH = Path.home() / ".local/state/telegram-reauth-notified"
 SMALL_GROUP_MAX_PARTICIPANTS = 15
 
 
@@ -96,15 +97,26 @@ def notify_telegram_reauth_needed(session_name: str) -> None:
 
 
 async def ensure_telegram_authorized(
-    client: TelegramClient, session_name: str
+    client: TelegramClient,
+    session_name: str,
+    reauth_notice_path: Path,
 ) -> None:
     if await client.is_user_authorized():
+        reauth_notice_path.unlink(missing_ok=True)
         return
 
-    try:
-        notify_telegram_reauth_needed(session_name)
-    except Exception as exc:
-        logger.warning(f"Failed to send Telegram re-auth notification: {exc}")
+    notice_was_sent = (
+        reauth_notice_path.exists()
+        and reauth_notice_path.read_text(encoding="utf-8") == session_name
+    )
+    if not notice_was_sent:
+        try:
+            notify_telegram_reauth_needed(session_name)
+        except Exception as exc:
+            logger.warning(f"Failed to send Telegram re-auth notification: {exc}")
+        else:
+            reauth_notice_path.parent.mkdir(parents=True, exist_ok=True)
+            reauth_notice_path.write_text(session_name, encoding="utf-8")
 
     raise RuntimeError(
         "Telegram notification session is not authorized. Run: "
@@ -735,7 +747,7 @@ async def run() -> int:
     client = TelegramClient(session_name, api_id, api_hash)
     await client.connect()
     try:
-        await ensure_telegram_authorized(client, session_name)
+        await ensure_telegram_authorized(client, session_name, REAUTH_NOTICE_PATH)
         notifications, next_state = await collect_notifications(client, state)
     finally:
         await client.disconnect()
