@@ -6,9 +6,11 @@ import test from "node:test";
 
 import {
   appendUniqueConversationUrls,
+  deliveryModeForScanState,
   normalizeScanWatermarks,
   parseArgs,
   readBraveConversationHistory,
+  readQueuedConversationIds,
 } from "../open_chatgpt_conversations_in_brave.mjs";
 
 test("reads real ChatGPT visits from the configured Brave profile", async () => {
@@ -34,6 +36,21 @@ test("accepts the real prior browser scan watermarks", async () => {
     normalizeScanWatermarks(priorState.scanWatermarks),
     priorState.scanWatermarks,
   );
+  assert.equal(deliveryModeForScanState(priorState), "browser");
+});
+
+test("queues only the initial full scan", () => {
+  assert.equal(deliveryModeForScanState(null), "queue");
+});
+
+test("preserves the real pending initial backlog for manual opening", async () => {
+  const outputPath = path.join(
+    os.homedir(),
+    ".local/state/open-chatgpt-conversations-in-brave/conversations-to-open.txt",
+  );
+  const pendingConversationIds = await readQueuedConversationIds(outputPath);
+
+  assert.equal(pendingConversationIds.size > 0, true);
 });
 
 test("persists real Brave conversation URLs without duplicates", async (context) => {
