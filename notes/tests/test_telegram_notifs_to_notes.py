@@ -704,28 +704,21 @@ def test_telegram_auth_command_uses_owning_repo() -> None:
     )
 
 
-def test_telegram_auth_check_allows_authorized_session(tmp_path: Path) -> None:
+def test_telegram_auth_check_allows_authorized_session() -> None:
     class FakeClient:
         async def is_user_authorized(self) -> bool:
             return True
-
-    reauth_notice_path = tmp_path / "telegram-reauth-notified"
-    reauth_notice_path.write_text("main1", encoding="utf-8")
 
     asyncio.run(
         telegram_notifs_to_notes.ensure_telegram_authorized(
             FakeClient(),
             "main1",
-            reauth_notice_path,
         )
     )
 
-    assert not reauth_notice_path.exists()
 
-
-def test_telegram_auth_check_notifies_once_per_unauthorized_session(
+def test_telegram_auth_check_notifies_and_fails_when_unauthorized(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
 ) -> None:
     notifications = []
 
@@ -742,16 +735,12 @@ def test_telegram_auth_check_notifies_once_per_unauthorized_session(
         fake_notify,
     )
 
-    reauth_notice_path = tmp_path / "telegram-reauth-notified"
-    for _ in range(2):
-        with pytest.raises(RuntimeError, match="auth_telegram_notifs.py"):
-            asyncio.run(
-                telegram_notifs_to_notes.ensure_telegram_authorized(
-                    FakeClient(),
-                    "main1",
-                    reauth_notice_path,
-                )
+    with pytest.raises(RuntimeError, match="auth_telegram_notifs.py"):
+        asyncio.run(
+            telegram_notifs_to_notes.ensure_telegram_authorized(
+                FakeClient(),
+                "main1",
             )
+        )
 
     assert notifications == ["main1"]
-    assert reauth_notice_path.read_text(encoding="utf-8") == "main1"
