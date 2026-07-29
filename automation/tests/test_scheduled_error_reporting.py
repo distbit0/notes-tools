@@ -213,11 +213,14 @@ def test_runner_logs_an_actual_codex_process_failure(tmp_path: Path) -> None:
     error_preflight.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     error_preflight.chmod(0o700)
     error_log = tmp_path / "error_log.txt"
+    error_inbox = tmp_path / "inbox-index.md"
+    error_inbox.write_text("# Inbox index\n", encoding="utf-8")
     state_home = tmp_path / "state"
     environment = os.environ | {
         "CODEX_BIN": "/usr/bin/false",
         "DESKTOP_ERROR_LOGGER": str(ERROR_LOGGER),
         "DESKTOP_ERROR_LOG_PATH": str(error_log),
+        "DESKTOP_ERROR_INBOX_PATH": str(error_inbox),
         "PATH": f"{executable_directory}:{os.environ['PATH']}",
         "SCHEDULED_CODEX_LOG_DIR": str(tmp_path / "logs"),
         "SCHEDULED_CODEX_NOTES_AUTO_COMMIT_LOCK": str(
@@ -238,6 +241,7 @@ def test_runner_logs_an_actual_codex_process_failure(tmp_path: Path) -> None:
     assert result.returncode == 1
     log_text = error_log.read_text(encoding="utf-8")
     assert log_text.count("--- desktop-error ") == 1
+    assert "Scheduled job failed" in error_inbox.read_text(encoding="utf-8")
     assert "source: scheduled-fix-logged-errors" in log_text
     assert "exit_status=1" in log_text
     assert "job_log=" in log_text
