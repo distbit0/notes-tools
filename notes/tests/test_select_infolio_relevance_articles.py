@@ -9,7 +9,6 @@ import pytest
 from select_infolio_relevance_articles import (
     fetch_ranked_articles,
     load_settings,
-    reviewed_article_ids,
     select_articles,
 )
 
@@ -34,11 +33,10 @@ def live_ranked_articles():
     return articles
 
 
-def test_selection_uses_unique_articles_from_top_eligible_pool(live_ranked_articles) -> None:
+def test_selection_uses_unique_articles_from_top_ranked_pool(live_ranked_articles) -> None:
     settings = load_settings(CONFIG_PATH)
     selected, candidate_pool_size = select_articles(
         live_ranked_articles,
-        set(),
         settings.pool_size,
         settings.sample_size,
         random.Random(20260712),
@@ -55,40 +53,12 @@ def test_selection_uses_unique_articles_from_top_eligible_pool(live_ranked_artic
     assert all(article.lineate_url.startswith(("http://", "https://")) for article in selected)
 
 
-@pytest.mark.parametrize(
-    "marker_prefix",
-    ["Analysed article ID:", "- Reviewed article ID:"],
-)
-def test_feedback_marker_excludes_an_actual_article(
-    live_ranked_articles,
-    tmp_path: Path,
-    marker_prefix: str,
-) -> None:
-    excluded_article = live_ranked_articles[0]
-    feedback_path = tmp_path / "feedback.md"
-    feedback_path.write_text(
-        f"# Feedback\n\n{marker_prefix} `{excluded_article.article_id}`\n",
-        encoding="utf-8",
-    )
-
-    selected, _candidate_pool_size = select_articles(
-        live_ranked_articles,
-        reviewed_article_ids(feedback_path),
-        len(live_ranked_articles),
-        len(live_ranked_articles),
-        random.Random(20260712),
-    )
-
-    assert excluded_article.article_id not in {article.article_id for article in selected}
-
-
 def test_selection_returns_every_available_actual_candidate_when_under_limit(
     live_ranked_articles,
 ) -> None:
     actual_candidate_slice = live_ranked_articles[: min(4, len(live_ranked_articles))]
     selected, candidate_pool_size = select_articles(
         actual_candidate_slice,
-        set(),
         30,
         5,
         random.Random(20260712),

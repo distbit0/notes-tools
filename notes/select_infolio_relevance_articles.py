@@ -16,10 +16,6 @@ from urllib.parse import urlparse
 import requests
 
 
-REVIEWED_ARTICLE_PATTERN = re.compile(
-    r"^(?:-\s*)?(?:Analysed|Reviewed) article ID:\s*`?([0-9a-fA-F-]{36})`?\s*$",
-    re.MULTILINE,
-)
 BATCH_DATE_PATTERN = re.compile(r"^## Infolio relevance (\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
 
 
@@ -163,11 +159,6 @@ def fetch_ranked_articles(
     )
 
 
-def reviewed_article_ids(feedback_path: Path) -> set[str]:
-    feedback = feedback_path.read_text(encoding="utf-8")
-    return {match.group(1).lower() for match in REVIEWED_ARTICLE_PATTERN.finditer(feedback)}
-
-
 def completed_batch_dates(feedback_path: Path) -> set[str]:
     feedback = feedback_path.read_text(encoding="utf-8")
     return {match.group(1) for match in BATCH_DATE_PATTERN.finditer(feedback)}
@@ -175,17 +166,11 @@ def completed_batch_dates(feedback_path: Path) -> set[str]:
 
 def select_articles(
     ranked_articles: Sequence[RankedArticle],
-    excluded_article_ids: set[str],
     pool_size: int,
     sample_size: int,
     random_source: random.Random | random.SystemRandom | None = None,
 ) -> tuple[list[RankedArticle], int]:
-    eligible_articles = [
-        article
-        for article in ranked_articles
-        if article.article_id.lower() not in excluded_article_ids
-    ]
-    candidate_pool = eligible_articles[:pool_size]
+    candidate_pool = list(ranked_articles[:pool_size])
     selection_size = min(sample_size, len(candidate_pool))
     selected_articles = (random_source or random.SystemRandom()).sample(candidate_pool, selection_size)
     return selected_articles, len(candidate_pool)
@@ -218,7 +203,7 @@ def selection_payload(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Select unreviewed articles from the ranked Infolio queue.",
+        description="Select articles from the ranked Infolio queue.",
     )
     parser.add_argument(
         "--config",
@@ -230,7 +215,7 @@ def parse_args() -> argparse.Namespace:
         "--feedback-file",
         type=Path,
         required=True,
-        help="Scheduled skill feedback file used to exclude reviewed article IDs.",
+        help="Scheduled skill feedback file used to prevent duplicate batches on the same date.",
     )
     return parser.parse_args()
 
@@ -255,7 +240,6 @@ def main() -> None:
     ranked_articles = fetch_ranked_articles(settings, service_role_key)
     selected_articles, candidate_pool_size = select_articles(
         ranked_articles,
-        reviewed_article_ids(args.feedback_file),
         settings.pool_size,
         settings.sample_size,
     )

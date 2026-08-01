@@ -793,7 +793,7 @@ prepare_infolio_relevance_prompt() {
   fi
 
   cat <<PROMPT
-Analyse exactly the Infolio articles selected below. The selector has already excluded articles marked as analysed in the skill feedback file. Attempt every supplied Lineate URL and do not replace the selection.
+Review exactly the Infolio articles selected below. Articles may have appeared in prior batches; use the skill feedback to prevent redundant output, not to reject repeated inputs. Attempt every supplied Lineate URL and do not replace the selection.
 
 Selection JSON:
 $selection_json
