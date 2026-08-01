@@ -11,20 +11,17 @@ import time
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEDULER = REPO_ROOT / "automation/run_scheduled_codex_skill.sh"
-
-
-def install_successful_error_preflight(executable_directory: Path) -> None:
-    error_preflight = executable_directory / "error_log_has_new_records"
-    error_preflight.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
-    error_preflight.chmod(0o700)
+REAL_ERROR_LOG = Path.home() / "dev/error_log.txt"
 
 
 def scheduled_error_job_environment(tmp_path: Path) -> dict[str, str]:
     executable_directory = tmp_path / "bin"
     executable_directory.mkdir()
-    install_successful_error_preflight(executable_directory)
+    error_log = tmp_path / "error_log.txt"
+    error_log.write_bytes(REAL_ERROR_LOG.read_bytes())
     return os.environ | {
         "CODEX_BIN": "/usr/bin/true",
+        "DESKTOP_ERROR_LOG_PATH": str(error_log),
         "PATH": f"{executable_directory}:{os.environ['PATH']}",
         "SCHEDULED_CODEX_LOG_DIR": str(tmp_path / "logs"),
         "SCHEDULED_CODEX_NOTES_AUTO_COMMIT_LOCK": str(
@@ -356,3 +353,22 @@ def test_override_runs_a_scheduled_job_again_after_its_catchup_was_claimed(
     assert override_run.returncode == 0
     assert expected_output in override_run.stdout
     assert "catch-up already ran" not in override_run.stdout
+
+
+def test_scheduled_error_job_skips_an_empty_log(tmp_path: Path) -> None:
+    environment = scheduled_error_job_environment(tmp_path) | {
+        "CODEX_BIN": "/usr/bin/false",
+    }
+    Path(environment["DESKTOP_ERROR_LOG_PATH"]).write_text("", encoding="utf-8")
+
+    result = subprocess.run(
+        [str(SCHEDULER), "--override", "scheduled-jobs", "0600"],
+        cwd=REPO_ROOT,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "no new desktop error log records" in result.stdout

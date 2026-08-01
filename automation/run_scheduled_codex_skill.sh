@@ -280,6 +280,10 @@ job_log=${job_log}"
     "$details"
 }
 
+error_log_has_new_records() {
+  [[ -s "$DESKTOP_ERROR_LOG" ]]
+}
+
 message_pull_scripts() {
   printf '%s\t%s\n' "github" "notes/github_notifs_to_notes.py"
   printf '%s\t%s\n' "telegram" "notes/telegram_notifs_to_notes.py"
