@@ -43,16 +43,6 @@ test("queues only the initial full scan", () => {
   assert.equal(deliveryModeForScanState(null), "queue");
 });
 
-test("preserves the real pending initial backlog for manual opening", async () => {
-  const outputPath = path.join(
-    os.homedir(),
-    ".local/state/open-chatgpt-conversations-in-brave/conversations-to-open.txt",
-  );
-  const pendingConversationIds = await readQueuedConversationIds(outputPath);
-
-  assert.equal(pendingConversationIds.size > 0, true);
-});
-
 test("persists real Brave conversation URLs without duplicates", async (context) => {
   const temporaryDirectory = await mkdtemp(
     path.join(os.tmpdir(), "chatgpt-conversation-urls-test-"),
@@ -73,5 +63,9 @@ test("persists real Brave conversation URLs without duplicates", async (context)
   assert.deepEqual(
     (await readFile(outputPath, "utf8")).trim().split("\n"),
     urls,
+  );
+  assert.deepEqual(
+    await readQueuedConversationIds(outputPath),
+    new Set([...lastOpenedByConversation.keys()].slice(0, 2)),
   );
 });

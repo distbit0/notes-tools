@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 
@@ -13,6 +14,7 @@ SKILLS_DIR = NOTES_DIR / ".agents/skills"
 ERROR_LOGGER = Path.home() / "dev/misc/automation/log_desktop_error.sh"
 
 SPECIALIST_SKILLS = {
+    "connect-notes",
     "scheduled-fix-logged-errors",
     "scheduled-resolve-contradictions",
 }
@@ -131,20 +133,79 @@ def test_recurring_reports_share_feedback_and_instruction_contract() -> None:
         )
 
 
-def test_tweet_feedback_keeps_posting_candidates_first() -> None:
+def test_recurring_inbox_file_links_use_vault_wikilinks() -> None:
+    linked_skill_count = 0
+
+    for skill_name in RECURRING_REPORT_SKILLS:
+        skill_text = (SKILLS_DIR / skill_name / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        for line in skill_text.splitlines():
+            if not line.startswith("Feedback file:"):
+                continue
+            linked_skill_count += 1
+            match = re.fullmatch(r"Feedback file: \[\[([^]]+\.md)\]\]", line)
+            assert match is not None, f"invalid inbox link in {skill_name}: {line}"
+            target = match.group(1)
+            assert not target.startswith("/")
+            assert (NOTES_DIR / target).is_file()
+
+    assert linked_skill_count == len(RECURRING_REPORT_SKILLS) - 1
+
+    contract_text = (
+        SKILLS_DIR
+        / "schedule-codex-skill/references/recurring-report-contract.md"
+    ).read_text(encoding="utf-8")
+    capture_text = (SKILLS_DIR / "capture/SKILL.md").read_text(encoding="utf-8")
+    assert "vault-relative" in contract_text and "wikilink" in contract_text
+    assert "vault-relative" in capture_text and "wikilink" in capture_text
+
+
+def test_tweet_feedback_separates_the_posting_queue_and_unreviewed_tail() -> None:
     skill_directory = SKILLS_DIR / "scheduled-tweet-ideas"
     feedback_text = (skill_directory / "feedback.md").read_text(encoding="utf-8")
-    candidates_start = feedback_text.index("## Accepted and unpublished")
-    other_start = feedback_text.index("## Other tweet ideas")
-    candidate_text = feedback_text[candidates_start:other_start]
+    accepted_path = skill_directory / "accepted-unpublished.md"
+    accepted_text = accepted_path.read_text(encoding="utf-8")
+    skill_text = (skill_directory / "SKILL.md").read_text(encoding="utf-8")
 
-    assert candidates_start < other_start
-    assert "accepted: true" in candidate_text
-    assert "accepted: false" not in candidate_text
-    assert "published: true" not in candidate_text
-    assert candidate_text.count("\naccepted:") == candidate_text.count(
-        "\npublished:"
+    def entries(text: str) -> list[str]:
+        return re.findall(r"(?ms)^### .+?(?=^---\s*$|\Z)", text)
+
+    feedback_entries = entries(feedback_text)
+    accepted_entries = entries(accepted_text)
+    assert feedback_entries
+    assert accepted_entries
+
+    for entry in feedback_entries + accepted_entries:
+        for field in ("accepted", "published", "feedback", "instructions"):
+            assert len(re.findall(rf"(?m)^{field}:", entry)) == 1
+
+    assert all(
+        re.search(r"(?m)^accepted: true$", entry)
+        and re.search(r"(?m)^published: false$", entry)
+        for entry in accepted_entries
     )
+    assert not any(
+        re.search(r"(?m)^accepted: true$", entry)
+        and re.search(r"(?m)^published: false$", entry)
+        for entry in feedback_entries
+    )
+
+    review_states = [
+        re.search(r"(?m)^accepted:\s*(.*)$", entry).group(1)
+        for entry in feedback_entries
+    ]
+    first_unreviewed = next(
+        (index for index, state in enumerate(review_states) if not state),
+        len(review_states),
+    )
+    assert all(not state for state in review_states[first_unreviewed:])
+
+    assert "Feedback file: [[.agents/skills/scheduled-tweet-ideas/feedback.md]]" in skill_text
+    assert (
+        "Accepted and unpublished: "
+        "[[.agents/skills/scheduled-tweet-ideas/accepted-unpublished.md]]"
+    ) in skill_text
     assert not (skill_directory / "scripts/open_feedback_tabs.sh").exists()
 
 
