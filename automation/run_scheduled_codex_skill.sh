@@ -139,40 +139,34 @@ scheduled_epoch_for_slot() {
   printf '%s\n' "$slot_epoch"
 }
 
-catchup_date_for_slot() {
+scheduled_date_for_slot() {
   local slot="$1"
   local scheduled_epoch
-  local now_epoch
 
   if [[ -z "$slot" ]]; then
     return 0
   fi
 
   scheduled_epoch="$(scheduled_epoch_for_slot "$slot")"
-  now_epoch="$(date +%s)"
-  if (( now_epoch - scheduled_epoch <= CATCHUP_GRACE_SECONDS )); then
-    return 0
-  fi
-
   date -d "@${scheduled_epoch}" +%F
 }
 
-claim_catchup_run() {
+claim_scheduled_run() {
   local job_name="$1"
   local slot="$2"
   local override_existing_run="$3"
-  local catchup_date
+  local scheduled_date
   local marker_file
 
-  catchup_date="$(catchup_date_for_slot "$slot")"
-  if [[ -z "$catchup_date" ]]; then
+  scheduled_date="$(scheduled_date_for_slot "$slot")"
+  if [[ -z "$scheduled_date" ]]; then
     return 0
   fi
 
-  marker_file="${STATE_DIR}/catchup-${job_name}-${catchup_date}"
+  marker_file="${STATE_DIR}/scheduled-run-${job_name}-${scheduled_date}-${slot}"
   if [[ -e "$marker_file" && "$override_existing_run" != "1" ]]; then
-    printf '[%s] skipped scheduled Codex job: %s; catch-up already ran for %s.\n' \
-      "$(date --iso-8601=seconds)" "$job_name" "$catchup_date" \
+    printf '[%s] skipped scheduled Codex job: %s; scheduled run already claimed for %s at %s.\n' \
+      "$(date --iso-8601=seconds)" "$job_name" "$scheduled_date" "$slot" \
       | append_job_log "${LOG_DIR}/${job_name}.log"
     return 1
   fi
@@ -671,7 +665,7 @@ scheduled_codex_job() {
   fi
 
   scheduled_work_count=$((scheduled_work_count + 1))
-  if ! claim_catchup_run "$job_name" "$run_slot" "$override_existing_run"; then
+  if ! claim_scheduled_run "$job_name" "$run_slot" "$override_existing_run"; then
     return 0
   fi
 
@@ -698,7 +692,7 @@ scheduled_todo_kickoff_job() {
   fi
 
   scheduled_work_count=$((scheduled_work_count + 1))
-  if ! claim_catchup_run "$job_name" "$run_slot" "$override_existing_run"; then
+  if ! claim_scheduled_run "$job_name" "$run_slot" "$override_existing_run"; then
     return 0
   fi
   if [[ ! -x "$TODO_KICKOFF_SCRIPT" ]]; then
@@ -766,7 +760,7 @@ scheduled_error_log_job() {
     return 0
   fi
 
-  if ! claim_catchup_run "$job_name" "$run_slot" "$override_existing_run"; then
+  if ! claim_scheduled_run "$job_name" "$run_slot" "$override_existing_run"; then
     return 0
   fi
 
@@ -836,7 +830,7 @@ scheduled_codex_job_every_n_days() {
     return 0
   fi
 
-  if ! claim_catchup_run "$job_name" "$run_slot" "$override_existing_run"; then
+  if ! claim_scheduled_run "$job_name" "$run_slot" "$override_existing_run"; then
     return 0
   fi
 

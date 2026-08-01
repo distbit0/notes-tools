@@ -122,7 +122,7 @@ def test_unattended_scheduled_jobs_do_not_relabel_as_cli() -> None:
         assert job_sources[job_name] == "exec"
 
 
-def test_cadence_phase_uses_the_scheduled_slot_for_catchups() -> None:
+def test_cadence_phase_uses_the_scheduled_slot() -> None:
     scheduler_text = SCHEDULER.read_text(encoding="utf-8")
     cadence_function = scheduler_text[
         scheduler_text.index("cadence_phase_for_slot()"):
@@ -144,7 +144,7 @@ def test_infolio_selection_is_passed_to_codex_after_cadence_check() -> None:
     assert "prepare_infolio_relevance_prompt" in scheduler_text
     assert 'extra_prompt="$("$extra_prompt_builder")"' in scheduled_job
     assert scheduled_job.index("current_phase=") < scheduled_job.index('extra_prompt="$("$extra_prompt_builder")"')
-    assert scheduled_job.index("claim_catchup_run") < scheduled_job.index('extra_prompt="$("$extra_prompt_builder")"')
+    assert scheduled_job.index("claim_scheduled_run") < scheduled_job.index('extra_prompt="$("$extra_prompt_builder")"')
     assert "if (( prompt_builder_status == 3 )); then" in scheduled_job
     assert 'log_skipped_job "$job_name" "$extra_prompt"' in scheduled_job
     assert "Selection JSON:" in scheduler_text
@@ -181,7 +181,7 @@ def test_interactive_todo_kickoff_runs_three_times_daily_as_cli() -> None:
     ]
     assert 'if [[ "$session_source" != "cli" ]]' in kickoff_job
     assert '"$TODO_KICKOFF_SCRIPT"' in kickoff_job
-    assert "claim_catchup_run" in kickoff_job
+    assert "claim_scheduled_run" in kickoff_job
 
 
 def test_message_timer_pulls_notes_without_drafting_replies() -> None:
@@ -333,7 +333,7 @@ exec /usr/bin/tee "$@"
     assert tee_started_path.read_text(encoding="utf-8").count("\n") == 2
 
 
-def test_override_runs_a_scheduled_job_again_after_its_catchup_was_claimed(
+def test_override_runs_a_scheduled_job_again_after_its_run_was_claimed(
     tmp_path: Path,
 ) -> None:
     environment = scheduled_error_job_environment(tmp_path)
@@ -356,10 +356,20 @@ def test_override_runs_a_scheduled_job_again_after_its_catchup_was_claimed(
     assert first_run.returncode == 0
     assert expected_output in first_run.stdout
     assert repeated_run.returncode == 0
-    assert "catch-up already ran" in repeated_run.stdout
+    assert "scheduled run already claimed" in repeated_run.stdout
     assert override_run.returncode == 0
     assert expected_output in override_run.stdout
-    assert "catch-up already ran" not in override_run.stdout
+    assert "scheduled run already claimed" not in override_run.stdout
+
+
+def test_scheduled_run_claim_identity_includes_each_slot() -> None:
+    scheduler_text = SCHEDULER.read_text(encoding="utf-8")
+    claim_function = scheduler_text[
+        scheduler_text.index("claim_scheduled_run()"):
+        scheduler_text.index("\ncap_log_file()")
+    ]
+
+    assert "${scheduled_date}-${slot}" in claim_function
 
 
 def test_scheduled_error_job_skips_an_empty_log(tmp_path: Path) -> None:
