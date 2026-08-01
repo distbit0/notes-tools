@@ -69,7 +69,9 @@ def test_scheduled_codex_job_cadences_are_spread_out() -> None:
     daily_schedule = scheduled_daily_jobs()
 
     assert actual_schedule == expected_schedule
-    assert daily_schedule == {}
+    assert daily_schedule == {
+        "scheduled-goal-advancement": ("07:00", "daily-goal-advancement"),
+    }
 
     schedule_period = lcm(*(period_days for _schedule_time, period_days, _phase in actual_schedule.values()))
     for epoch_day in range(schedule_period):
@@ -93,6 +95,7 @@ def test_unattended_scheduled_jobs_do_not_relabel_as_cli() -> None:
         "scheduled-answer-open-questions",
         "scheduled-security-audit",
         "scheduled-distill-assistant-chats",
+        "scheduled-goal-advancement",
         "scheduled-infolio-relevance",
     }
 
@@ -147,14 +150,18 @@ def test_infolio_selection_is_passed_to_codex_after_cadence_check() -> None:
     assert "Selection JSON:" in scheduler_text
 
 
-def test_goal_advancement_is_not_automatically_scheduled() -> None:
+def test_goal_advancement_is_automatically_scheduled() -> None:
     scheduler_text = SCHEDULER.read_text(encoding="utf-8")
     scheduled_jobs = scheduler_text[
         scheduler_text.index("scheduled_codex_jobs()"):
         scheduler_text.index("\nscheduled_message_reply_jobs()")
     ]
 
-    assert "scheduled-goal-advancement" not in scheduled_jobs
+    assert (
+        'scheduled_codex_job "scheduled-goal-advancement" '
+        '"scheduled-goal-advancement" "exec" "07:00" "" '
+        '"daily-goal-advancement"'
+    ) in scheduled_jobs
 
 
 def test_interactive_todo_kickoff_runs_three_times_daily_as_cli() -> None:

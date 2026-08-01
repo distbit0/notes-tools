@@ -8,9 +8,10 @@
 
 ## Goal advancement scheduling
 
-- Date: 2026-07-20
-- Decision: pause automatic `scheduled-goal-advancement` runs by leaving it out of the recurring scheduled-job registry and disabling the now-unused 07:00 user timer.
-- Scope: keep the skill and its dedicated `daily-goal-advancement` Codex profile available for manual use or a future explicit reactivation.
+- Date: 2026-08-02
+- Decision: run `scheduled-goal-advancement` every day at 07:00 through the recurring scheduled-job wrapper, using an unattended `exec` session and the dedicated `daily-goal-advancement` Codex profile.
+- Rationale: reactivate autonomous progress on the prioritized current goals while keeping the run isolated from other scheduled skills and out of interactive session history.
+- Safety: the dedicated profile applies the goal-advancement permission policy rather than the wrapper's default full-access bypass.
 
 ## Message reply drafting
 
