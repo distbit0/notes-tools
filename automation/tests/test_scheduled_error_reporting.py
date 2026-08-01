@@ -12,6 +12,10 @@ SCHEDULER = REPO_ROOT / "automation/run_scheduled_codex_skill.sh"
 NOTES_DIR = Path.home() / "notes"
 SKILLS_DIR = NOTES_DIR / ".agents/skills"
 ERROR_LOGGER = Path.home() / "dev/misc/automation/log_desktop_error.sh"
+EFFECTIVE_AGENTS_FILES = (
+    Path.home() / ".codex/AGENTS.md",
+    NOTES_DIR / "AGENTS.md",
+)
 
 SPECIALIST_SKILLS = {
     "connect-notes",
@@ -41,7 +45,10 @@ RECURRING_REPORT_SKILLS = {
 
 
 def test_agents_md_is_the_shared_log_routing_authority() -> None:
-    agents_text = (NOTES_DIR / "AGENTS.md").read_text(encoding="utf-8")
+    agents_text = "\n".join(
+        agents_file.read_text(encoding="utf-8")
+        for agents_file in EFFECTIVE_AGENTS_FILES
+    )
 
     assert "[[contradictions]]" in agents_text
     assert "/home/pimania/dev/error_log.txt" in agents_text
