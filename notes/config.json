@@ -17,6 +17,6 @@
     "viewSlug": "all",
     "queueFilter": "unread",
     "poolSize": 30,
-    "sampleSize": 5
+    "sampleSize": 10
   }
 }
