@@ -23,7 +23,7 @@ scheduled_codex_jobs() {
   scheduled_codex_job_every_n_days "scheduled-answer-open-questions" "scheduled-answer-open-questions" "exec" "04:00" 6 4
   scheduled_codex_job_every_n_days "scheduled-security-audit" "scheduled-security-audit" "exec" "11:00" 21 3
   scheduled_codex_job_every_n_days "scheduled-distill-assistant-chats" "scheduled-distill-assistant-chats" "exec" "16:00" 2 0
-  scheduled_codex_job_every_n_days "scheduled-infolio-relevance" "scheduled-infolio-relevance" "exec" "21:00" 3 1 "" prepare_infolio_relevance_prompt
+  scheduled_codex_job_every_n_days "scheduled-infolio-relevance" "scheduled-infolio-relevance" "exec" "21:00" 5 1 "" prepare_infolio_relevance_prompt
   scheduled_error_log_job "scheduled-fix-logged-errors" "scheduled-fix-logged-errors" "exec" "06:00"
   scheduled_todo_kickoff_job "scheduled-todo-kickoff" "execute-todo" "cli" "11:00 16:00 21:00"
 }

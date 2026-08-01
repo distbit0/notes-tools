@@ -62,7 +62,7 @@ def test_scheduled_codex_job_cadences_are_spread_out() -> None:
         "scheduled-answer-open-questions": ("04:00", 6, 4),
         "scheduled-security-audit": ("11:00", 21, 3),
         "scheduled-distill-assistant-chats": ("16:00", 2, 0),
-        "scheduled-infolio-relevance": ("21:00", 3, 1),
+        "scheduled-infolio-relevance": ("21:00", 5, 1),
     }
 
     actual_schedule = scheduled_every_n_day_jobs()
