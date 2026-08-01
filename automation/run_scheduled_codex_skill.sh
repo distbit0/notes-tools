@@ -275,6 +275,7 @@ job_log=${job_log}"
 
   "$DESKTOP_ERROR_LOGGER" \
     "$skill_name" \
+    "$TOOLS_DIR/automation/run_scheduled_codex_skill.sh" \
     "Scheduled job failed" \
     "${job_name} exited with status ${status} before it could reliably report the failure." \
     "$details"

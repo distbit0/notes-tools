@@ -241,6 +241,7 @@ def test_runner_logs_an_actual_codex_process_failure(tmp_path: Path) -> None:
     assert log_text.count("--- desktop-error ") == records_before + 1
     assert "Scheduled job failed" in error_inbox.read_text(encoding="utf-8")
     assert "source: scheduled-fix-logged-errors" in log_text
+    assert f"producer_path: {SCHEDULER}" in log_text
     assert "exit_status=1" in log_text
     assert "job_log=" in log_text
     assert stat.S_IMODE(error_log.stat().st_mode) == 0o600

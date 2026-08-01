@@ -372,3 +372,22 @@ def test_scheduled_error_job_skips_an_empty_log(tmp_path: Path) -> None:
 
     assert result.returncode == 0
     assert "no new desktop error log records" in result.stdout
+
+
+def test_scheduled_error_job_skips_a_missing_log(tmp_path: Path) -> None:
+    environment = scheduled_error_job_environment(tmp_path) | {
+        "CODEX_BIN": "/usr/bin/false",
+    }
+    Path(environment["DESKTOP_ERROR_LOG_PATH"]).unlink()
+
+    result = subprocess.run(
+        [str(SCHEDULER), "--override", "scheduled-jobs", "0600"],
+        cwd=REPO_ROOT,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "no new desktop error log records" in result.stdout
