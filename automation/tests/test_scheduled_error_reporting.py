@@ -62,6 +62,11 @@ def test_agents_md_is_the_shared_log_routing_authority() -> None:
     assert "Substantive findings produced by the work" in agents_text
     assert "discovered security weaknesses and exposures" in agents_text
     assert "task output rather than execution failures" in agents_text
+    assert "Only after completing all reasonable in-scope recovery" in agents_text
+    assert "Apply the same threshold" in agents_text
+    assert "failed intermediate commands" in agents_text
+    assert "corrected tests" in agents_text
+    assert "one-off transient scheduled/transport failures" in agents_text
 
 
 def test_only_specialist_skill_packages_reference_shared_log_routing() -> None:
@@ -121,6 +126,10 @@ def test_logged_error_fixer_requires_context_complete_judgment_based_reports() -
     assert "reroute" in skill_text and "contradictions.md" in skill_text
     assert "suppressed" in skill_text
     assert "adjacent actionable" in skill_text
+    assert "only unresolved records" in skill_text
+    assert "fully recovers with no lasting impact" in skill_text
+    assert "creating recursive error work" in skill_text
+    assert "- source/title summary - fixed" not in skill_text
 
 
 def test_recurring_reports_share_feedback_and_instruction_contract() -> None:
