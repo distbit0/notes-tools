@@ -10,7 +10,6 @@ from notes_utils import format_notification_label
 from social_notif_common import (
     ItemCursor,
     SocialNotification,
-    USER_AGENT,
     cursor_sort_key,
     html_to_text,
     is_newer_than_cursor,
@@ -23,7 +22,41 @@ from social_notif_common import (
 
 
 LESSWRONG_BASE_URL = "https://www.lesswrong.com"
-LESSWRONG_GRAPHQL_URL = f"{LESSWRONG_BASE_URL}/graphql"
+LESSWRONG_GRAPHQL_URL = f"{LESSWRONG_BASE_URL}/api/streamGraphql"
+LESSWRONG_USER_AGENT = "ForumMagnum/2.1"
+
+
+def resolve_streaming_graphql_references(
+    value: Any,
+    store_delta: dict[str, Any],
+    active_references: frozenset[str] = frozenset(),
+) -> Any:
+    if isinstance(value, list):
+        return [
+            resolve_streaming_graphql_references(
+                item, store_delta, active_references
+            )
+            for item in value
+        ]
+    if not isinstance(value, dict):
+        return value
+    if set(value) == {"$ref"}:
+        reference = value["$ref"]
+        if not isinstance(reference, str) or reference not in store_delta:
+            raise RuntimeError("LessWrong GraphQL response has an unknown reference")
+        if reference in active_references:
+            raise RuntimeError("LessWrong GraphQL response has a cyclic reference")
+        return resolve_streaming_graphql_references(
+            store_delta[reference],
+            store_delta,
+            active_references | {reference},
+        )
+    return {
+        key: resolve_streaming_graphql_references(
+            child, store_delta, active_references
+        )
+        for key, child in value.items()
+    }
 
 
 @dataclass(frozen=True)
@@ -37,7 +70,10 @@ class LessWrongClient:
         return cls(session=requests.Session(), cookie_header=cookies.header)
 
     def graphql(
-        self, query: str, variables: dict[str, Any] | None = None
+        self,
+        operation_name: str,
+        query: str,
+        variables: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload = request_json(
             self.session,
@@ -45,22 +81,47 @@ class LessWrongClient:
             LESSWRONG_GRAPHQL_URL,
             headers={
                 "Cookie": self.cookie_header,
-                "User-Agent": USER_AGENT,
+                "User-Agent": LESSWRONG_USER_AGENT,
                 "Accept": "application/json",
                 "Content-Type": "application/json",
                 "Referer": LESSWRONG_BASE_URL,
             },
-            json_payload={"query": query, "variables": variables or {}},
+            json_payload=[
+                {
+                    "operationName": operation_name,
+                    "query": query,
+                    "variables": variables or {},
+                }
+            ],
         )
-        if not isinstance(payload, dict):
-            raise RuntimeError("Unexpected LessWrong GraphQL response")
-        data = payload.get("data")
+        if (
+            not isinstance(payload, list)
+            or len(payload) != 1
+            or not isinstance(payload[0], dict)
+            or payload[0].get("index") != 0
+            or not isinstance(payload[0].get("result"), dict)
+        ):
+            raise RuntimeError("Unexpected LessWrong streaming GraphQL response")
+        result = payload[0]["result"]
+        if result.get("errors"):
+            raise RuntimeError(
+                f"LessWrong GraphQL returned errors: {result['errors']}"
+            )
+        store_delta = payload[0].get("storeDelta", {})
+        if not isinstance(store_delta, dict):
+            raise RuntimeError("LessWrong GraphQL response has an invalid store delta")
+        data = resolve_streaming_graphql_references(
+            result.get("data"), store_delta
+        )
         if not isinstance(data, dict):
             raise RuntimeError("LessWrong GraphQL response missing data")
         return data
 
     def current_user_id(self) -> str:
-        data = self.graphql("query { currentUser { _id } }")
+        data = self.graphql(
+            "CurrentUserForNotifications",
+            "query CurrentUserForNotifications { currentUser { _id } }",
+        )
         user = data.get("currentUser")
         if not isinstance(user, dict):
             raise RuntimeError("LessWrong currentUser is missing")
@@ -68,7 +129,7 @@ class LessWrongClient:
 
     def unread_notifications(self, user_id: str) -> list[dict[str, Any]]:
         query = """
-        query($userId: String!) {
+        query UnreadNotificationsForUser($userId: String!) {
           notifications(
             selector: { unreadUserNotifications: { userId: $userId } }
             limit: 50
@@ -86,7 +147,9 @@ class LessWrongClient:
           }
         }
         """.strip()
-        data = self.graphql(query, {"userId": user_id})
+        data = self.graphql(
+            "UnreadNotificationsForUser", query, {"userId": user_id}
+        )
         notifications = data.get("notifications")
         if not isinstance(notifications, dict) or not isinstance(
             notifications.get("results"), list
@@ -100,7 +163,7 @@ class LessWrongClient:
 
     def conversations(self, user_id: str) -> list[dict[str, Any]]:
         query = """
-        query($userId: String!) {
+        query ConversationsForUser($userId: String!) {
           conversations(
             selector: { userConversations: { userId: $userId, showArchive: false } }
             limit: 50
@@ -125,7 +188,7 @@ class LessWrongClient:
           }
         }
         """.strip()
-        data = self.graphql(query, {"userId": user_id})
+        data = self.graphql("ConversationsForUser", query, {"userId": user_id})
         conversations = data.get("conversations")
         if not isinstance(conversations, dict) or not isinstance(
             conversations.get("results"), list

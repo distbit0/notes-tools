@@ -233,7 +233,7 @@ def request_json(
     *,
     headers: dict[str, str],
     params: dict[str, str] | None = None,
-    json_payload: dict[str, Any] | None = None,
+    json_payload: dict[str, Any] | list[dict[str, Any]] | None = None,
 ) -> Any:
     attempts = GET_ATTEMPTS if method.upper() == "GET" else 1
     for attempt in range(1, attempts + 1):

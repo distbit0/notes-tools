@@ -28,6 +28,12 @@ CAPTURED_X_INTERNAL_ERROR = (
     '{"errors":[{"message":"Internal error","code":131}]}'
 )
 CAPTURED_X_DM_URL = "https://x.com/i/api/1.1/dm/inbox_initial_state.json"
+CAPTURED_LESSWRONG_STREAMING_RESPONSE = (
+    '[{"index":0,"result":{"data":{"users":{"results":'
+    '[{"$ref":"BtbwfsEyeT4P2eqXu"}]}}},"storeDelta":'
+    '{"BtbwfsEyeT4P2eqXu":{"_id":"BtbwfsEyeT4P2eqXu",'
+    '"displayName":"gwern"}}}]'
+)
 
 
 def assert_well_formed_notifications(
@@ -133,6 +139,51 @@ def captured_x_internal_error_response() -> requests.Response:
     response._content = CAPTURED_X_INTERNAL_ERROR.encode("utf-8")
     response.headers["Content-Type"] = "application/json"
     return response
+
+
+def captured_lesswrong_streaming_response() -> requests.Response:
+    response = requests.Response()
+    response.status_code = 200
+    response._content = CAPTURED_LESSWRONG_STREAMING_RESPONSE.encode("utf-8")
+    response.headers["Content-Type"] = "application/json"
+    return response
+
+
+def test_lesswrong_client_uses_current_streaming_graphql_contract() -> None:
+    session = Mock(spec=requests.Session)
+    session.request.return_value = captured_lesswrong_streaming_response()
+    client = lesswrong_social_notifs.LessWrongClient(
+        session=session,
+        cookie_header="captured_session=captured_value",
+    )
+
+    query = (
+        "query CapturedPublicUser($selector: UserSelector) { "
+        "users(selector: $selector, limit: 1) { results { _id displayName } } }"
+    )
+    variables = {"selector": {"usersProfile": {"slug": "gwern"}}}
+
+    data = client.graphql("CapturedPublicUser", query, variables)
+
+    assert data == {
+        "users": {
+            "results": [
+                {"_id": "BtbwfsEyeT4P2eqXu", "displayName": "gwern"}
+            ]
+        }
+    }
+
+    _, url = session.request.call_args.args[:2]
+    request_kwargs = session.request.call_args.kwargs
+    assert url == "https://www.lesswrong.com/api/streamGraphql"
+    assert request_kwargs["headers"]["User-Agent"] == "ForumMagnum/2.1"
+    assert request_kwargs["json"] == [
+        {
+            "operationName": "CapturedPublicUser",
+            "query": query,
+            "variables": variables,
+        }
+    ]
 
 
 def test_request_json_retries_captured_transient_get(monkeypatch) -> None:
