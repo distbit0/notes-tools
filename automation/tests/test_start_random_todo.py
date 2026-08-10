@@ -9,12 +9,14 @@ from automation.start_random_todo import (
     DEFAULT_HERDR_BIN,
     DEFAULT_HERDR_LAUNCHER,
     DEFAULT_INBOX,
+    TODO_SECTION_MARKER,
     Herdr,
     add_session_annotation,
     find_live_session_panes,
     live_session_panes,
     load_todos,
     notes_workspace,
+    parse_inbox_todos,
     process_resumes_session,
 )
 
@@ -32,7 +34,7 @@ def test_live_inbox_parser_only_returns_top_level_inbox_items() -> None:
     inbox_heading = next(
         index
         for index, line in enumerate(inbox_lines)
-        if line.casefold().startswith("# inbox index")
+        if line.strip() == TODO_SECTION_MARKER
     )
 
     todos = load_todos(DEFAULT_INBOX)
@@ -41,6 +43,23 @@ def test_live_inbox_parser_only_returns_top_level_inbox_items() -> None:
     assert all(todo.line_index > inbox_heading for todo in todos)
     assert all(inbox_lines[todo.line_index] == todo.line for todo in todos)
     assert all(todo.line.startswith("- ") and todo.task for todo in todos)
+
+
+def test_inbox_parser_uses_stable_marker_instead_of_heading_text() -> None:
+    inbox_text = """# A heading the user can rename
+- not a scheduled todo
+
+<!-- scheduled-todo-kickoff-start -->
+- first scheduled todo
+- second scheduled todo
+"""
+
+    todos = parse_inbox_todos(inbox_text)
+
+    assert [todo.task for todo in todos] == [
+        "first scheduled todo",
+        "second scheduled todo",
+    ]
 
 
 def test_annotation_round_trip_uses_a_live_codex_session(

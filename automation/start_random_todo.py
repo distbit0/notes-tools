@@ -23,6 +23,7 @@ DEFAULT_HERDR_BIN = "/home/pimania/.local/bin/herdr"
 DEFAULT_HERDR_LAUNCHER = "/home/pimania/dev/misc/desktop/herdr-launch.sh"
 DEFAULT_LOCK = Path.home() / ".local/state/scheduled-codex/start-random-todo.lock"
 WORKSPACE_LABEL = "notes"
+TODO_SECTION_MARKER = "<!-- scheduled-todo-kickoff-start -->"
 SESSION_SUFFIX = re.compile(
     r"\s+codex resume "
     r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s*$",
@@ -50,10 +51,12 @@ def parse_inbox_todos(text: str) -> list[Todo]:
         inbox_start = next(
             index
             for index, line in enumerate(lines)
-            if line.casefold().startswith("# inbox index")
+            if line.strip() == TODO_SECTION_MARKER
         )
     except StopIteration as exc:
-        raise RuntimeError("inbox-index.md has no '# Inbox index' section") from exc
+        raise RuntimeError(
+            f"inbox-index.md has no {TODO_SECTION_MARKER} marker"
+        ) from exc
 
     todos: list[Todo] = []
     for line_index, line in enumerate(lines[inbox_start + 1 :], inbox_start + 1):
