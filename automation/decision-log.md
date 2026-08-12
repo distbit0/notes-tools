@@ -8,8 +8,8 @@
 
 ## Goal advancement scheduling
 
-- Date: 2026-08-02
-- Decision: run `scheduled-goal-advancement` every day at 07:00 through the recurring scheduled-job wrapper, using an unattended `exec` session and the dedicated `daily-goal-advancement` Codex profile.
+- Date: 2026-08-12
+- Decision: run `scheduled-goal-advancement` every three days at 07:00 on phase 1 through the recurring scheduled-job wrapper, using an unattended `exec` session and the dedicated `daily-goal-advancement` Codex profile. The phase includes the completed 2026-08-12 run, so the next due date is 2026-08-15.
 - Rationale: reactivate autonomous progress on the prioritized current goals while keeping the run isolated from other scheduled skills and out of interactive session history.
 - Safety: the dedicated profile applies the goal-advancement permission policy rather than the wrapper's default full-access bypass.
 

@@ -55,6 +55,7 @@ def scheduled_daily_jobs() -> dict[str, tuple[str, str]]:
 
 def test_scheduled_codex_job_cadences_are_spread_out() -> None:
     expected_schedule = {
+        "scheduled-goal-advancement": ("07:00", 3, 1),
         "scheduled-tweet-ideas": ("04:00", 3, 2),
         "scheduled-resolve-contradictions": ("04:00", 6, 1),
         "scheduled-idea-space-search": ("05:00", 5, 1),
@@ -69,9 +70,7 @@ def test_scheduled_codex_job_cadences_are_spread_out() -> None:
     daily_schedule = scheduled_daily_jobs()
 
     assert actual_schedule == expected_schedule
-    assert daily_schedule == {
-        "scheduled-goal-advancement": ("07:00", "daily-goal-advancement"),
-    }
+    assert daily_schedule == {}
 
     schedule_period = lcm(*(period_days for _schedule_time, period_days, _phase in actual_schedule.values()))
     for epoch_day in range(schedule_period):
@@ -158,10 +157,20 @@ def test_goal_advancement_is_automatically_scheduled() -> None:
     ]
 
     assert (
-        'scheduled_codex_job "scheduled-goal-advancement" '
-        '"scheduled-goal-advancement" "exec" "07:00" "" '
+        'scheduled_codex_job_every_n_days "scheduled-goal-advancement" '
+        '"scheduled-goal-advancement" "exec" "07:00" 3 1 "" "" '
         '"daily-goal-advancement"'
     ) in scheduled_jobs
+
+    cadence_job = scheduler_text[
+        scheduler_text.index("scheduled_codex_job_every_n_days()"):
+        scheduler_text.index("\nrun_mode=")
+    ]
+    assert 'local profile_name="${9:-}"' in cadence_job
+    assert (
+        'run_and_record_codex_job "$job_name" "$skill_name" "$session_source" '
+        '"$extra_prompt" "$profile_name"'
+    ) in cadence_job
 
 
 def test_interactive_todo_kickoff_runs_three_times_daily_as_cli() -> None:

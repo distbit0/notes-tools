@@ -16,7 +16,7 @@ readonly TODO_KICKOFF_SCRIPT="${SCHEDULED_TODO_KICKOFF_SCRIPT:-${TOOLS_DIR}/auto
 readonly CATCHUP_GRACE_SECONDS=600
 
 scheduled_codex_jobs() {
-  scheduled_codex_job "scheduled-goal-advancement" "scheduled-goal-advancement" "exec" "07:00" "" "daily-goal-advancement"
+  scheduled_codex_job_every_n_days "scheduled-goal-advancement" "scheduled-goal-advancement" "exec" "07:00" 3 1 "" "" "daily-goal-advancement"
   scheduled_codex_job_every_n_days "scheduled-tweet-ideas" "scheduled-tweet-ideas" "exec" "04:00" 3 2
   scheduled_codex_job_every_n_days "scheduled-resolve-contradictions" "scheduled-resolve-contradictions" "exec" "04:00" 6 1
   scheduled_codex_job_every_n_days "scheduled-idea-space-search" "scheduled-idea-space-search" "exec" "05:00" 5 1
@@ -803,11 +803,12 @@ scheduled_codex_job_every_n_days() {
   local phase="${6:-}"
   local extra_prompt="${7:-}"
   local extra_prompt_builder="${8:-}"
+  local profile_name="${9:-}"
   local current_phase
   local prompt_builder_status
   local error_count_before
 
-  validate_job_config "$job_name" "$skill_name" "$session_source" ""
+  validate_job_config "$job_name" "$skill_name" "$session_source" "$profile_name"
   if ! slot_matches_schedule "$schedule_times" "$run_slot"; then
     return 0
   fi
@@ -859,7 +860,7 @@ scheduled_codex_job_every_n_days() {
     fi
   fi
 
-  run_and_record_codex_job "$job_name" "$skill_name" "$session_source" "$extra_prompt" ""
+  run_and_record_codex_job "$job_name" "$skill_name" "$session_source" "$extra_prompt" "$profile_name"
 }
 
 override_existing_run=0
