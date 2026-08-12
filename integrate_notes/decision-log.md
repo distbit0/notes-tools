@@ -10,3 +10,4 @@
 - Continuous processing is opt-in through `organise: continuous` frontmatter and uses `grouping: |` as its instruction boundary.
 - Scheduled mode must remain non-interactive. A missing grouping value is written explicitly with a warning rather than held as hidden state.
 - Model patches use locally validated structured JSON. Malformed patch structure is rejected before note writes; a markdown fence may be unwrapped only with a warning before normal schema validation.
+- Every non-empty scratchpad chunk must produce at least one locally validated patch or exact duplication proof. An empty evidence response is invalid and must retry or fail without removing the chunk.
