@@ -3,6 +3,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 if str(SRC_DIR) not in sys.path:
@@ -104,4 +106,33 @@ def test_integration_request_sets_per_call_timeout() -> None:
     assert (
         captured_kwargs["timeout"]
         == integrate_notes.OPENROUTER_REQUEST_TIMEOUT_SECONDS
+    )
+
+
+def test_integration_rejects_captured_empty_evidence_response() -> None:
+    captured_response = json.dumps(
+        {
+            "action": "integrate",
+            "patches": [],
+            "duplications": [],
+        }
+    )
+
+    with pytest.raises(
+        integrate_notes.IntegrationParseError,
+        match="at least one patch or duplication proof",
+    ):
+        integrate_notes.parse_integration_payload(captured_response)
+
+
+def test_integration_prompt_requires_evidence_for_non_empty_chunk() -> None:
+    prompt = integrate_notes.build_integration_prompt(
+        "group by topic",
+        "# Existing body",
+        "A new scratchpad point.",
+    )
+
+    assert (
+        "patches and duplications must not both be empty"
+        in prompt
     )

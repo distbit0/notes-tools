@@ -522,7 +522,7 @@ def build_integration_prompt(
         "If any notes are already present in the document body and therefore do not need a patch, you must include a duplication proof entry for them. "
         "SEARCH and DUPLICATE/BODY text must each be a single contiguous span copied from the current document body; do not concatenate separate sections. "
         "Do not add commentary, numbering, markdown fences, or explanations outside the JSON object. "
-        "Use empty patches and duplications arrays only when no changes are required and no duplication proofs are needed."
+        "A non-empty scratchpad chunk must produce at least one patch or duplication proof; patches and duplications must not both be empty."
         f"\n<json_schema>\n{INTEGRATION_RESPONSE_SCHEMA_TEXT}\n</json_schema>"
     )
 
@@ -691,6 +691,11 @@ def parse_integration_payload(
     if not isinstance(duplication_payloads, list):
         raise IntegrationParseError(
             "Integration JSON response must include a duplications array.",
+            _json_payload_text(payload),
+        )
+    if not patches and not duplication_payloads:
+        raise IntegrationParseError(
+            "Integration response must include at least one patch or duplication proof for a non-empty scratchpad chunk.",
             _json_payload_text(payload),
         )
 
