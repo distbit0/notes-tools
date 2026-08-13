@@ -100,7 +100,7 @@ def test_integration_request_sets_per_call_timeout() -> None:
     ]
     assert duplications == []
     assert captured_kwargs["reasoning"] == integrate_notes.DEFAULT_REASONING
-    assert captured_kwargs["model"] == "openai/gpt-5.6-luna"
+    assert captured_kwargs["model"] == "openai/gpt-5.6-terra"
     assert captured_kwargs["text"] == {
         "format": integrate_notes.INTEGRATION_RESPONSE_FORMAT
     }
@@ -290,7 +290,7 @@ def test_verification_request_uses_structured_output() -> None:
 
     assert assessment.is_complete
     assert assessment.omissions == ()
-    assert captured_kwargs["model"] == "openai/gpt-5.6-luna"
+    assert captured_kwargs["model"] == "openai/gpt-5.6-terra"
     assert captured_kwargs["text"] == {
         "format": integrate_notes.VERIFICATION_RESPONSE_FORMAT
     }
