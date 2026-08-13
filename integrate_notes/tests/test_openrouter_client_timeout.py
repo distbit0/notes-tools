@@ -100,6 +100,7 @@ def test_integration_request_sets_per_call_timeout() -> None:
     ]
     assert duplications == []
     assert captured_kwargs["reasoning"] == integrate_notes.DEFAULT_REASONING
+    assert captured_kwargs["model"] == "openai/gpt-5.6-luna"
     assert captured_kwargs["text"] == {
         "format": integrate_notes.INTEGRATION_RESPONSE_FORMAT
     }
@@ -132,7 +133,164 @@ def test_integration_prompt_requires_evidence_for_non_empty_chunk() -> None:
         "A new scratchpad point.",
     )
 
-    assert (
-        "patches and duplications must not both be empty"
-        in prompt
+    assert "patches and duplications must not both be empty" in prompt
+
+
+def test_empty_evidence_is_retried_before_a_patch_is_accepted(monkeypatch) -> None:
+    responses = iter(
+        [
+            json.dumps(
+                {"action": "integrate", "patches": [], "duplications": []}
+            ),
+            json.dumps(
+                {
+                    "action": "integrate",
+                    "patches": [
+                        {
+                            "search": "- Focusing:",
+                            "replace": (
+                                "- When I am feeling tired, take melatonin, put the laptop away, "
+                                "read a germane article, then go to sleep instead of watching YouTube.\n"
+                                "- Focusing:"
+                            ),
+                        }
+                    ],
+                    "duplications": [],
+                }
+            ),
+        ]
     )
+    request_count = 0
+
+    def request_integration(*_args, **_kwargs):
+        nonlocal request_count
+        request_count += 1
+        return next(responses)
+
+    monkeypatch.setattr(integrate_notes, "request_integration", request_integration)
+
+    updated_body, patches, duplications = integrate_notes.integrate_chunk_with_patches(
+        object(),
+        "group by topic",
+        "- Focusing:",
+        (
+            "Chris Lakin's method of noticing where a feeling sits in one's body. "
+            "v valuble explanation wrt procrastination: "
+            "https://chatgpt.com/share/6a78e598-cd7c-83ea-ace4-dccf338d4960\n"
+            "when i am feeling tired, take melatonin, put laptop away, read germane "
+            "article then go to sleep instead of watching yt"
+        ),
+        "historical chunk",
+    )
+
+    assert request_count == 2
+    assert len(patches) == 1
+    assert duplications == []
+    assert updated_body == patches[0].replace_text
+
+
+def test_verification_retry_uses_structured_omissions_once(monkeypatch) -> None:
+    first_candidate = ("body after first candidate", [], [])
+    second_candidate = ("body after corrected candidate", [], [])
+    integration_results = iter([first_candidate, second_candidate])
+    integration_feedback = []
+    omission = integrate_notes.VerificationOmission(
+        notes_text=(
+            "when i am feeling tired, take melatonin, put laptop away, read germane "
+            "article then go to sleep instead of watching yt"
+        ),
+        body_text="<not present>",
+        explanation="The independent bedtime routine was omitted.",
+        proposed_fix="Add the complete bedtime routine.",
+    )
+    assessments = iter(
+        [
+            integrate_notes.VerificationAssessment(
+                status="missing",
+                summary="One independent instruction is missing.",
+                omissions=(omission,),
+            ),
+            integrate_notes.VerificationAssessment(
+                status="complete",
+                summary="Every source instruction is represented.",
+                omissions=(),
+            ),
+        ]
+    )
+
+    def integrate_chunk(*_args, verification_omissions=None, **_kwargs):
+        integration_feedback.append(verification_omissions)
+        return next(integration_results)
+
+    monkeypatch.setattr(
+        integrate_notes,
+        "integrate_chunk_with_patches",
+        integrate_chunk,
+    )
+    monkeypatch.setattr(
+        integrate_notes,
+        "verify_candidate_body",
+        lambda *_args, **_kwargs: next(assessments),
+    )
+    monkeypatch.setattr(
+        integrate_notes,
+        "log_verification_assessment",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = integrate_notes.integrate_verified_chunk(
+        object(),
+        "group by topic",
+        "body before integration",
+        omission.notes_text,
+        "historical chunk",
+        "productivity-strat-index.md",
+        0,
+        1,
+        False,
+    )
+
+    assert result == second_candidate
+    assert integration_feedback == [None, (omission,)]
+
+
+def test_verification_payload_enforces_status_and_omission_consistency() -> None:
+    inconsistent_response = json.dumps(
+        {
+            "status": "missing",
+            "summary": "Content is missing.",
+            "omissions": [],
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="at least one omission"):
+        integrate_notes.parse_verification_payload(inconsistent_response)
+
+
+def test_verification_request_uses_structured_output() -> None:
+    captured_kwargs = {}
+    response_payload = json.dumps(
+        {
+            "status": "complete",
+            "summary": "Every source detail is represented.",
+            "omissions": [],
+        }
+    )
+
+    class Responses:
+        def create(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            return SimpleNamespace(error=None, output_text=response_payload)
+
+    assessment = integrate_notes.request_verification(
+        SimpleNamespace(responses=Responses()),
+        "verification prompt",
+        "historical chunk",
+    )
+
+    assert assessment.is_complete
+    assert assessment.omissions == ()
+    assert captured_kwargs["model"] == "openai/gpt-5.6-luna"
+    assert captured_kwargs["text"] == {
+        "format": integrate_notes.VERIFICATION_RESPONSE_FORMAT
+    }

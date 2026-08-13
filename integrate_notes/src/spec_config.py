@@ -5,11 +5,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from model_config import load_model_name
+
 SCRATCHPAD_HEADING = "# -- SCRATCHPAD"
 ENV_API_KEY = "OPENROUTER_API_KEY"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
-DEFAULT_MODEL = "openai/gpt-5.4"
+DEFAULT_MODEL = load_model_name()
 DEFAULT_REASONING = {"effort": "high"}
 
 DEFAULT_MAX_RETRIES = 3

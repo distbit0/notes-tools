@@ -3,13 +3,10 @@ import json
 import os
 import re
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter, sleep
 from typing import Any, Callable, List, Sequence, Tuple
-from threading import Event, Lock, Thread
-from uuid import uuid4
 
 import shutil
 import subprocess
@@ -17,6 +14,8 @@ import subprocess
 from dotenv import load_dotenv
 from loguru import logger
 from openai import OpenAI
+
+from model_config import load_model_name
 
 SCRATCHPAD_HEADING = "# -- SCRATCHPAD"
 GROUPING_FIELD = "grouping"
@@ -28,17 +27,13 @@ DEFAULT_CHUNK_PARAGRAPHS = 30
 DEFAULT_CHUNK_MAX_WORDS = 400
 ENV_API_KEY = "OPENROUTER_API_KEY"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_MODEL = "minimax/minimax-m3"
+DEFAULT_MODEL = load_model_name()
 DEFAULT_REASONING = {"effort": "high"}
 DEFAULT_MAX_RETRIES = 3
 RETRY_INITIAL_DELAY_SECONDS = 2.0
 RETRY_BACKOFF_FACTOR = 2.0
 OPENROUTER_REQUEST_TIMEOUT_SECONDS = 120.0
 OPENROUTER_SDK_MAX_RETRIES = 0
-PENDING_VERIFICATION_PROMPTS_PATH = (
-    Path(__file__).resolve().parent / "pending_verification_prompts.json"
-)
-MAX_CONCURRENT_VERIFICATIONS = 4
 INSTRUCTIONS_PROMPT = """# Instructions
 
 - Integrate the provided notes into the document body, following the specified grouping approach.
@@ -133,6 +128,40 @@ INTEGRATION_RESPONSE_FORMAT = {
 }
 INTEGRATION_RESPONSE_SCHEMA_TEXT = json.dumps(
     INTEGRATION_RESPONSE_SCHEMA,
+    ensure_ascii=False,
+    indent=2,
+)
+VERIFICATION_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": ["complete", "missing"]},
+        "summary": {"type": "string"},
+        "omissions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "notes": {"type": "string"},
+                    "body": {"type": "string"},
+                    "explanation": {"type": "string"},
+                    "proposed_fix": {"type": "string"},
+                },
+                "required": ["notes", "body", "explanation", "proposed_fix"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["status", "summary", "omissions"],
+    "additionalProperties": False,
+}
+VERIFICATION_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "name": "verification_response",
+    "strict": True,
+    "schema": VERIFICATION_RESPONSE_SCHEMA,
+}
+VERIFICATION_RESPONSE_SCHEMA_TEXT = json.dumps(
+    VERIFICATION_RESPONSE_SCHEMA,
     ensure_ascii=False,
     indent=2,
 )
@@ -499,6 +528,40 @@ def execute_with_retry(
             delay *= backoff_factor
 
 
+@dataclass(frozen=True)
+class VerificationOmission:
+    notes_text: str
+    body_text: str
+    explanation: str
+    proposed_fix: str
+
+
+@dataclass(frozen=True)
+class VerificationAssessment:
+    status: str
+    summary: str
+    omissions: tuple[VerificationOmission, ...]
+
+    @property
+    def is_complete(self) -> bool:
+        return self.status == "complete"
+
+
+def format_verification_omissions(
+    omissions: Sequence[VerificationOmission],
+) -> str:
+    sections: list[str] = []
+    for index, omission in enumerate(omissions, start=1):
+        sections.append(
+            f"Omission {index}:\n"
+            f'Notes:"{omission.notes_text}"\n'
+            f'Body:"{omission.body_text}"\n'
+            f'Explanation:"{omission.explanation}"\n'
+            f'Proposed Fix:"{omission.proposed_fix}"'
+        )
+    return "\n\n".join(sections)
+
+
 def build_integration_prompt(
     grouping: str,
     current_body: str,
@@ -507,6 +570,7 @@ def build_integration_prompt(
     failed_duplications: List["DuplicationFailure"] | None = None,
     failed_formatting: str | None = None,
     previous_response: str | None = None,
+    verification_omissions: Sequence[VerificationOmission] | None = None,
 ) -> str:
     clarifications = (
         "You are integrating notes into the main body of the document incrementally. "
@@ -574,6 +638,16 @@ def build_integration_prompt(
             "<previous_json_response>\n"
             + previous_response
             + "\n</previous_json_response>"
+        )
+
+    if verification_omissions:
+        sections.append(
+            "<verification_feedback>\n"
+            "The previous candidate omitted or materially altered the content below. "
+            "Create a complete replacement integration from the original document body, "
+            "correct these omissions, and preserve everything else in the scratchpad chunk.\n\n"
+            + format_verification_omissions(verification_omissions)
+            + "\n</verification_feedback>"
         )
 
     return "\n\n\n\n\n".join(sections)
@@ -947,6 +1021,7 @@ def integrate_chunk_with_patches(
     base_body: str,
     chunk_text: str,
     context_label: str,
+    verification_omissions: Sequence[VerificationOmission] | None = None,
 ) -> tuple[str, List[PatchInstruction], List[DuplicationProof]]:
     failed_patches: List[PatchFailure] | None = None
     failed_duplications: List[DuplicationFailure] | None = None
@@ -969,6 +1044,7 @@ def integrate_chunk_with_patches(
                 if failed_formatting or failed_patches or failed_duplications
                 else None
             ),
+            verification_omissions=verification_omissions,
         )
         response_text = request_integration(client, prompt, attempt_label)
         previous_response = response_text
@@ -1049,291 +1125,93 @@ def build_document(body: str, remaining_paragraphs: List[str]) -> str:
     return document
 
 
-def format_verification_assessment(assessment: str) -> str:
-    return (
-        assessment.replace(" - Notes:", "\nNotes:")
-        .replace(" Body:", "\nBody:")
-        .replace(" Explanation:", "\nExplanation:")
-    )
-
-
-class VerificationManager:
-    def __init__(self, client: OpenAI, target_file: Path) -> None:
-        self.client = client
-        self.pending_path = PENDING_VERIFICATION_PROMPTS_PATH
-        self.lock = Lock()
-        self.active_lock = Lock()
-        self.active_ids: set[str] = set()
-        self.executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_VERIFICATIONS)
-        self.new_prompt_event = Event()
-        self.stop_requested = False
-        self.tracked_file_name = Path(target_file).resolve().name
-        self.worker = Thread(
-            target=self._run,
-            name="VerificationManager",
-            daemon=True,
-        )
-        self.worker.start()
-
-    def enqueue_prompt(
-        self,
-        prompt: str,
-        context_label: str | None,
-        chunk_index: int | None,
-        total_chunks: int | None,
-    ) -> None:
-        if not isinstance(prompt, str) or not prompt.strip():
-            raise ValueError("Verification prompt must be a non-empty string.")
-
-        entry = {
-            "id": str(uuid4()),
-            "prompt": prompt,
-            "context_label": context_label,
-            "chunk_index": chunk_index,
-            "total_chunks": total_chunks,
-            "file_name": self.tracked_file_name,
-        }
-        with self.lock:
-            entries = self._read_entries_locked()
-            entries.append(entry)
-            self._write_entries_locked(entries)
-        self.new_prompt_event.set()
-
-    def shutdown(self) -> None:
-        self.stop_requested = True
-        self.new_prompt_event.set()
-        if self.worker.is_alive():
-            self.worker.join()
-        self.executor.shutdown(wait=True)
-
-    def _run(self) -> None:
-        while True:
-            try:
-                self._dispatch_pending()
-            except Exception as error:
-                logger.exception(
-                    f"Verification dispatcher encountered an error: {error}"
-                )
-            if self.stop_requested and not self._has_pending_work():
-                break
-            self.new_prompt_event.wait(timeout=0.5)
-            self.new_prompt_event.clear()
-
-    def _dispatch_pending(self) -> None:
-        with self.lock:
-            all_entries = self._read_entries_locked()
-            entries = self._entries_for_current_file_locked(all_entries)
-
-        for entry in entries:
-            entry_id = entry.get("id")
-            if not entry_id:
-                continue
-            with self.active_lock:
-                if entry_id in self.active_ids:
-                    continue
-                self.active_ids.add(entry_id)
-
-            future = self.executor.submit(self._send_prompt, entry)
-            future.add_done_callback(
-                lambda fut, data=entry: self._handle_result(data, fut)
-            )
-
-    def _send_prompt(self, entry: dict[str, Any]) -> str:
-        context_label = entry.get("context_label") or "verification"
-        prompt = entry["prompt"]
-        return request_verification(self.client, prompt, context_label)
-
-    def _handle_result(self, entry: dict[str, Any], future) -> None:
-        entry_id = entry.get("id")
-        try:
-            assessment = future.result()
-        except Exception as error:  # noqa: BLE001
-            context_label = entry.get("context_label") or "verification"
-            logger.exception(f"Verification for {context_label} failed: {error}")
-            if entry_id:
-                with self.active_lock:
-                    self.active_ids.discard(entry_id)
-            self.new_prompt_event.set()
-            return
-
-        self._log_assessment(entry, assessment)
-
-        if entry_id:
-            self._remove_entry(entry_id)
-            with self.active_lock:
-                self.active_ids.discard(entry_id)
-
-        self.new_prompt_event.set()
-
-    def _log_assessment(self, entry: dict[str, Any], assessment: str) -> None:
-        chunk_index = entry.get("chunk_index")
-        total_chunks = entry.get("total_chunks")
-        context_label = entry.get("context_label") or "verification"
-        file_name = entry.get("file_name")
-
-        if not file_name:
-            raise RuntimeError(
-                "Verification entry missing required file_name; pending prompts file may be corrupted."
-            )
-
-        base_header = f'Verification "{file_name}"'
-
-        if (
-            isinstance(chunk_index, int)
-            and isinstance(total_chunks, int)
-            and 0 <= chunk_index < total_chunks
-        ):
-            if "MISSING" in assessment:
-                notify_missing_verification(chunk_index, total_chunks, assessment)
-            chunk_header = f"{base_header}:"
-            if assessment.startswith(chunk_header):
-                logger.info(assessment)
-            else:
-                logger.info(f"{chunk_header}\n{assessment}")
-        else:
-            if context_label != "verification":
-                header = f"{base_header} ({context_label}):"
-            else:
-                header = f"{base_header}:"
-            if assessment.startswith(header):
-                logger.info(assessment)
-            else:
-                logger.info(f"{header}\n{assessment}")
-
-    def _remove_entry(self, entry_id: str) -> None:
-        with self.lock:
-            entries = self._read_entries_locked()
-            remaining = [item for item in entries if item.get("id") != entry_id]
-            self._write_entries_locked(remaining)
-
-    def _read_entries_locked(self) -> List[dict[str, Any]]:
-        if not self.pending_path.exists():
-            return []
-        raw = self.pending_path.read_text(encoding="utf-8")
-        if not raw.strip():
-            return []
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as error:
-            raise RuntimeError(
-                f"Pending verification prompts file {self.pending_path} is corrupted: {error}"
-            ) from error
-        if not isinstance(data, list):
-            raise RuntimeError(
-                f"Pending verification prompts file {self.pending_path} must contain a list."
-            )
-        return data
-
-    def _write_entries_locked(self, entries: List[dict[str, Any]]) -> None:
-        payload = json.dumps(entries, ensure_ascii=True, indent=2)
-        self.pending_path.write_text(payload, encoding="utf-8")
-
-    def _has_pending_work(self) -> bool:
-        with self.lock:
-            entries = self._read_entries_locked()
-            has_entries = bool(self._entries_for_current_file_locked(entries))
-        with self.active_lock:
-            has_active = bool(self.active_ids)
-        return has_entries or has_active
-
-    def _entries_for_current_file_locked(
-        self, entries: List[dict[str, Any]]
-    ) -> List[dict[str, Any]]:
-        invalid_entries: List[dict[str, Any]] = []
-        relevant_entries: List[dict[str, Any]] = []
-
-        for entry in entries:
-            file_name = entry.get("file_name")
-            entry_id = entry.get("id")
-            if not file_name or not entry_id:
-                invalid_entries.append(entry)
-                continue
-            if file_name == self.tracked_file_name:
-                relevant_entries.append(entry)
-
-        if invalid_entries:
-            invalid_count = len(invalid_entries)
-            suffix = "y" if invalid_count == 1 else "ies"
-            logger.warning(
-                f"Removed {invalid_count} invalid verification prompt entr{suffix} missing file metadata or IDs."
-            )
-            cleaned_entries = [
-                entry for entry in entries if entry not in invalid_entries
-            ]
-            self._write_entries_locked(cleaned_entries)
-
-        return relevant_entries
-
-
 def build_verification_prompt(
     chunk_text: str,
-    patch_replacements: Sequence[str],
-    duplication_proofs: Sequence[DuplicationProof],
-    context_label: str | None = None,
-    chunk_index: int | None = None,
-    total_chunks: int | None = None,
+    updated_body: str,
 ) -> str:
     response_instructions = (
-        "Report whether any note content is missing or materially altered."
-        " Respond with a concise single paragraph beginning with 'OK -' if everything is covered"
-        " or 'MISSING -' followed by details of any omissions."
-        " Seperate each omission by two newlines and for each omission, provide the following:\n"
-        '    Notes:"..."\n'
-        '    Body:"..."\n'
-        '    Explanation: "..."\n'
-        '    Proposed Fix: "..."\n'
-        'Quote the exact text from the notes chunk containing the missing detail and quote the exact passage from the patch replacements or duplication proofs that should cover it (or state Body:"<not present>" if nothing is relevant).'
-        " Explain precisely what information is still missing or altered without omitting any nuance."
+        "Return exactly one JSON object matching the schema below. "
+        "Use status='complete' with an empty omissions array only when every note detail is represented without material alteration. "
+        "Use status='missing' with one omission object per missing or altered detail otherwise. "
+        "For each omission, quote the exact notes text, quote the closest body passage or use '<not present>', "
+        "explain the loss precisely, and provide a concrete correction. "
+        "Do not add commentary or markdown fences outside the JSON object."
+        f"\n<json_schema>\n{VERIFICATION_RESPONSE_SCHEMA_TEXT}\n</json_schema>"
     )
-
-    if patch_replacements:
-        replacement_sections = []
-        for index, replacement_text in enumerate(patch_replacements, start=1):
-            replacement_sections.append(
-                f"[Patch {index} Replacement]\n{replacement_text}"
-            )
-        replacements_block = "\n\n".join(replacement_sections)
-    else:
-        replacements_block = "<no patch replacements provided>"
-
-    if duplication_proofs:
-        duplication_sections = []
-        for index, proof in enumerate(duplication_proofs, start=1):
-            duplication_sections.append(
-                "[Duplication {index} Proof]\nNotes:\n{notes}\n\nBody:\n{body}".format(
-                    index=index, notes=proof.notes_text, body=proof.body_text
-                )
-            )
-        duplications_block = "\n\n".join(duplication_sections)
-    else:
-        duplications_block = "<no duplication proofs provided>"
 
     sections = [
         (
             "<task>"
             "You are verifying that every idea/point/concept/argument/detail/url/[[wikilink]]/diagram etc. "
             "from the provided notes chunk has been integrated into the document body."
-            " Use the patch replacements to understand what will be inserted or rewritten."
-            " Duplication proofs are not edits; they are evidence of existing body text that already covers notes."
-            " Use duplication proofs as evidence of where notes are already present in the body without a patch."
-            " If a duplication proof does not fully cover the notes text, treat the missing detail as missing."
+            " Compare the original notes directly with the complete candidate document body."
             "</task>"
         ),
         f"<notes_chunk>\n{chunk_text}\n</notes_chunk>",
-        f"<patch_replacements>\n{replacements_block}\n</patch_replacements>",
-        f"<duplication_proofs>\n{duplications_block}\n</duplication_proofs>",
-        f"<response_guidelines>\n{response_instructions}\n</response_guidelines>",
+        f"<candidate_document_body>\n{updated_body}\n</candidate_document_body>",
+        f"<response_directive>\n{response_instructions}\n</response_directive>",
     ]
-    prompt = "\n\n\n\n\n".join(sections)
-    return prompt
+    return "\n\n\n\n\n".join(sections)
 
 
-def request_verification(client: OpenAI, prompt: str, context_label: str) -> str:
+def parse_verification_payload(response_text: str) -> VerificationAssessment:
+    if not response_text.strip():
+        raise RuntimeError("Verification response is empty.")
+    json_text = _strip_json_code_fence(response_text)
+    try:
+        payload = json.loads(json_text)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"Verification response is not valid JSON: {error}") from error
+    if not isinstance(payload, dict):
+        raise RuntimeError("Verification response must be a JSON object.")
+
+    status = payload.get("status")
+    summary = payload.get("summary")
+    omission_payloads = payload.get("omissions")
+    if status not in {"complete", "missing"}:
+        raise RuntimeError("Verification status must be 'complete' or 'missing'.")
+    if not isinstance(summary, str) or not summary.strip():
+        raise RuntimeError("Verification summary must be a non-empty string.")
+    if not isinstance(omission_payloads, list):
+        raise RuntimeError("Verification omissions must be an array.")
+
+    omissions: list[VerificationOmission] = []
+    for omission_payload in omission_payloads:
+        if not isinstance(omission_payload, dict):
+            raise RuntimeError("Each verification omission must be an object.")
+        field_values: dict[str, str] = {}
+        for field_name in ("notes", "body", "explanation", "proposed_fix"):
+            field_value = omission_payload.get(field_name)
+            if not isinstance(field_value, str) or not field_value.strip():
+                raise RuntimeError(
+                    f"Verification omission {field_name} must be a non-empty string."
+                )
+            field_values[field_name] = field_value.strip()
+        omissions.append(
+            VerificationOmission(
+                notes_text=field_values["notes"],
+                body_text=field_values["body"],
+                explanation=field_values["explanation"],
+                proposed_fix=field_values["proposed_fix"],
+            )
+        )
+
+    if status == "complete" and omissions:
+        raise RuntimeError("Complete verification must not include omissions.")
+    if status == "missing" and not omissions:
+        raise RuntimeError("Missing verification must include at least one omission.")
+    return VerificationAssessment(status, summary.strip(), tuple(omissions))
+
+
+def request_verification(
+    client: OpenAI, prompt: str, context_label: str
+) -> VerificationAssessment:
     def perform_request() -> str:
         response = client.responses.create(
             model=DEFAULT_MODEL,
             reasoning=DEFAULT_REASONING,
             input=prompt,
+            text={"format": VERIFICATION_RESPONSE_FORMAT},
             timeout=OPENROUTER_REQUEST_TIMEOUT_SECONDS,
         )
         if getattr(response, "error", None):
@@ -1343,7 +1221,106 @@ def request_verification(client: OpenAI, prompt: str, context_label: str) -> str
             raise RuntimeError("Received empty response from GPT verification call.")
         return output_text.strip()
 
-    return execute_with_retry(perform_request, f"verification {context_label}")
+    response_text = execute_with_retry(
+        perform_request, f"verification {context_label}"
+    )
+    return parse_verification_payload(response_text)
+
+
+def verify_candidate_body(
+    client: OpenAI,
+    chunk_text: str,
+    candidate_body: str,
+    context_label: str,
+) -> VerificationAssessment:
+    prompt = build_verification_prompt(chunk_text, candidate_body)
+    return request_verification(client, prompt, context_label)
+
+
+def log_verification_assessment(
+    file_name: str,
+    context_label: str,
+    assessment: VerificationAssessment,
+) -> None:
+    header = f'Verification "{file_name}" ({context_label}):'
+    if assessment.is_complete:
+        logger.info(f"{header}\nOK - {assessment.summary}")
+        return
+    logger.warning(
+        f"{header}\nMISSING - {assessment.summary}\n\n"
+        f"{format_verification_omissions(assessment.omissions)}"
+    )
+
+
+def integrate_verified_chunk(
+    client: OpenAI,
+    grouping: str,
+    base_body: str,
+    chunk_text: str,
+    context_label: str,
+    file_name: str,
+    chunk_index: int,
+    total_chunks: int,
+    disable_verification: bool,
+) -> tuple[str, List[PatchInstruction], List[DuplicationProof]]:
+    candidate = integrate_chunk_with_patches(
+        client,
+        grouping,
+        base_body,
+        chunk_text,
+        context_label,
+    )
+    if disable_verification:
+        return candidate
+
+    candidate_body, _, _ = candidate
+    assessment = verify_candidate_body(
+        client,
+        chunk_text,
+        candidate_body,
+        context_label,
+    )
+    log_verification_assessment(file_name, context_label, assessment)
+    if assessment.is_complete:
+        return candidate
+
+    logger.warning(
+        f"Retrying {context_label} once with {len(assessment.omissions)} "
+        "verification omission(s)."
+    )
+    retried_candidate = integrate_chunk_with_patches(
+        client,
+        grouping,
+        base_body,
+        chunk_text,
+        f"{context_label} verification retry",
+        verification_omissions=assessment.omissions,
+    )
+    retried_body, _, _ = retried_candidate
+    retried_assessment = verify_candidate_body(
+        client,
+        chunk_text,
+        retried_body,
+        f"{context_label} verification retry",
+    )
+    log_verification_assessment(
+        file_name,
+        f"{context_label} verification retry",
+        retried_assessment,
+    )
+    if retried_assessment.is_complete:
+        return retried_candidate
+
+    final_assessment_text = (
+        f"{retried_assessment.summary}\n\n"
+        f"{format_verification_omissions(retried_assessment.omissions)}"
+    )
+    notify_missing_verification(chunk_index, total_chunks, final_assessment_text)
+    raise RuntimeError(
+        f"Verification still found {len(retried_assessment.omissions)} omission(s) "
+        f"after the single allowed verification retry for {context_label}; "
+        "the scratchpad chunk was preserved."
+    )
 
 
 def resolve_git_root(source_path: Path) -> Path:
@@ -1430,103 +1407,79 @@ def integrate_notes(
     commit_and_push_original(source_path)
     scratchpad_paragraphs = normalize_paragraphs(source_scratchpad)
     client = create_openrouter_client()
-    verification_manager = (
-        None if disable_verification else VerificationManager(client, source_path)
-    )
-
-    try:
-        if not scratchpad_paragraphs:
-            logger.info(
-                "No scratchpad notes to integrate; ensuring scratchpad heading remains present."
-            )
-            source_path.write_text(
-                build_document(working_body, []),
-                encoding="utf-8",
-            )
-            return source_path
-
-        current_body = working_body
-        last_written_remaining: List[str] | None = scratchpad_paragraphs.copy()
-        chunks_completed = 0
-        integration_start = perf_counter()
-
-        while True:
-            scratchpad_paragraphs = refresh_scratchpad_paragraphs(
-                source_path, last_written_remaining
-            )
-            remaining_paragraphs = scratchpad_paragraphs
-            if not remaining_paragraphs:
-                break
-
-            paragraph_chunks = chunk_paragraphs(
-                remaining_paragraphs,
-                max_paragraphs_per_chunk,
-                max_words_per_chunk,
-            )
-            total_chunks = chunks_completed + len(paragraph_chunks)
-            chunk = paragraph_chunks[0]
-            chunk_text = "\n\n".join(chunk)
-            chunk_word_count = sum(count_words(paragraph) for paragraph in chunk)
-            chunk_index = chunks_completed
-            chunk_label = f"chunk {chunks_completed + 1}/{total_chunks}"
-            logger.info(
-                f"Integrating chunk {chunks_completed + 1} of {total_chunks} containing {len(chunk)} paragraphs and {chunk_word_count} words."
-            )
-            updated_body, patch_instructions, duplication_proofs = (
-                integrate_chunk_with_patches(
-                    client,
-                    resolved_grouping,
-                    current_body,
-                    chunk_text,
-                    chunk_label,
-                )
-            )
-            if verification_manager is not None:
-                patch_replacements = [
-                    instruction.replace_text for instruction in patch_instructions
-                ]
-                verification_prompt = build_verification_prompt(
-                    chunk_text,
-                    patch_replacements,
-                    duplication_proofs,
-                    chunk_label,
-                    chunk_index,
-                    total_chunks,
-                )
-                verification_manager.enqueue_prompt(
-                    verification_prompt,
-                    chunk_label,
-                    chunk_index,
-                    total_chunks,
-                )
-
-            current_body = updated_body
-            refreshed_paragraphs = refresh_scratchpad_paragraphs(
-                source_path, last_written_remaining
-            )
-            remaining_paragraphs = refreshed_paragraphs[len(chunk) :]
-            integrated_document = build_document(current_body, remaining_paragraphs)
-            source_path.write_text(integrated_document, encoding="utf-8")
-            logger.info(
-                f'Chunk {chunks_completed + 1} integration written to "{source_path}".'
-            )
-            last_written_remaining = remaining_paragraphs
-            chunks_completed += 1
-            remaining_chunks = total_chunks - chunks_completed
-            if remaining_chunks > 0:
-                elapsed_seconds = perf_counter() - integration_start
-                average_duration = elapsed_seconds / chunks_completed
-                estimated_seconds_remaining = average_duration * remaining_chunks
-                logger.info(
-                    f"Estimated time remaining: {format_duration(estimated_seconds_remaining)}"
-                    f" for {remaining_chunks} remaining chunk(s)."
-                )
-
-        logger.info("All scratchpad notes integrated; scratchpad section cleared.")
+    if not scratchpad_paragraphs:
+        logger.info(
+            "No scratchpad notes to integrate; ensuring scratchpad heading remains present."
+        )
+        source_path.write_text(
+            build_document(working_body, []),
+            encoding="utf-8",
+        )
         return source_path
-    finally:
-        if verification_manager is not None:
-            verification_manager.shutdown()
+
+    current_body = working_body
+    last_written_remaining: List[str] | None = scratchpad_paragraphs.copy()
+    chunks_completed = 0
+    integration_start = perf_counter()
+
+    while True:
+        scratchpad_paragraphs = refresh_scratchpad_paragraphs(
+            source_path, last_written_remaining
+        )
+        remaining_paragraphs = scratchpad_paragraphs
+        if not remaining_paragraphs:
+            break
+
+        paragraph_chunks = chunk_paragraphs(
+            remaining_paragraphs,
+            max_paragraphs_per_chunk,
+            max_words_per_chunk,
+        )
+        total_chunks = chunks_completed + len(paragraph_chunks)
+        chunk = paragraph_chunks[0]
+        chunk_text = "\n\n".join(chunk)
+        chunk_word_count = sum(count_words(paragraph) for paragraph in chunk)
+        chunk_index = chunks_completed
+        chunk_label = f"chunk {chunks_completed + 1}/{total_chunks}"
+        logger.info(
+            f"Integrating chunk {chunks_completed + 1} of {total_chunks} containing {len(chunk)} paragraphs and {chunk_word_count} words."
+        )
+        updated_body, _, _ = integrate_verified_chunk(
+            client,
+            resolved_grouping,
+            current_body,
+            chunk_text,
+            chunk_label,
+            source_path.name,
+            chunk_index,
+            total_chunks,
+            disable_verification,
+        )
+
+        current_body = updated_body
+        refreshed_paragraphs = refresh_scratchpad_paragraphs(
+            source_path, last_written_remaining
+        )
+        remaining_paragraphs = refreshed_paragraphs[len(chunk) :]
+        integrated_document = build_document(current_body, remaining_paragraphs)
+        source_path.write_text(integrated_document, encoding="utf-8")
+        logger.info(
+            f'Chunk {chunks_completed + 1} integration written to "{source_path}".'
+        )
+        last_written_remaining = remaining_paragraphs
+        chunks_completed += 1
+        remaining_chunks = total_chunks - chunks_completed
+        if remaining_chunks > 0:
+            elapsed_seconds = perf_counter() - integration_start
+            average_duration = elapsed_seconds / chunks_completed
+            estimated_seconds_remaining = average_duration * remaining_chunks
+            logger.info(
+                f"Estimated time remaining: {format_duration(estimated_seconds_remaining)}"
+                f" for {remaining_chunks} remaining chunk(s)."
+            )
+
+    logger.info("All scratchpad notes integrated; scratchpad section cleared.")
+    return source_path
 
 
 def continuous_organise_paths(notes_root: Path) -> list[Path]:
