@@ -223,7 +223,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--disable-verification",
         action="store_true",
-        help="Disable verification prompts and background verification checks.",
+        help="Disable blocking completeness verification checks.",
     )
     return parser.parse_args()
 
