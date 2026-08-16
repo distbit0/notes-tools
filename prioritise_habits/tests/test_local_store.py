@@ -607,6 +607,23 @@ def test_audio_playback_adds_silence_lead_in(tmp_path, monkeypatch):
     ]
 
 
+def test_audio_playback_applies_per_habit_double_speed(tmp_path, monkeypatch):
+    audio_path = tmp_path / "habit.mp3"
+    audio_path.write_bytes(b"cached mp3 bytes")
+    subprocess_calls = []
+
+    def fake_run(command, check):
+        subprocess_calls.append({"command": command, "check": check})
+
+    monkeypatch.setattr("src.main.subprocess.run", fake_run)
+
+    play_audio_file(audio_path, 2.0)
+
+    assert subprocess_calls[0]["command"][
+        subprocess_calls[0]["command"].index("-af") + 1
+    ] == "atempo=2,adelay=750:all=1"
+
+
 def test_custom_habit_audio_file_plays_without_generating_tts(monkeypatch):
     audio_file = CUSTOM_AUDIO_FILE
     custom_audio_path = PROJECT_ROOT / audio_file
@@ -636,7 +653,8 @@ def test_custom_habit_audio_file_plays_without_generating_tts(monkeypatch):
         "src.main.get_or_create_text_to_speech_audio", fail_if_tts_is_requested
     )
     monkeypatch.setattr(
-        "src.main.play_audio_file", lambda audio_path: played_paths.append(audio_path)
+        "src.main.play_audio_file",
+        lambda audio_path, playback_speed: played_paths.append(audio_path),
     )
 
     spoken_triggers = speak_ready_habit_triggers({}, ready_triggers)
@@ -668,6 +686,7 @@ def test_text_to_speech_speaks_sequentially_and_stops_without_bluetooth(
                 "id": "habit-1",
                 "name": REPLY_HABIT_NAME,
                 "dueOutputs": {"textToSpeech": True},
+                "ttsPlaybackSpeed": 2.0,
             },
             "trigger": {"time": "2026-06-12T06:30:00+07:00"},
         },
@@ -699,14 +718,15 @@ def test_text_to_speech_speaks_sequentially_and_stops_without_bluetooth(
     )
     monkeypatch.setattr("src.main.get_or_create_text_to_speech_audio", fake_get_audio)
     monkeypatch.setattr(
-        "src.main.play_audio_file", lambda path: played_paths.append(path)
+        "src.main.play_audio_file",
+        lambda path, playback_speed: played_paths.append((path, playback_speed)),
     )
 
     spoken_triggers = speak_ready_habit_triggers(text_to_speech_config, ready_triggers)
 
     assert [item["habit"]["id"] for item in spoken_triggers] == ["habit-1"]
     assert generated_text == [REPLY_HABIT_TEXT]
-    assert [path.name for path in played_paths] == ["0.mp3"]
+    assert [(path.name, speed) for path, speed in played_paths] == [("0.mp3", 2.0)]
 
 
 def test_phone_audio_control_url_replaces_state_from_environment():
@@ -753,7 +773,9 @@ def test_phone_audio_is_paused_around_queued_tts_batch(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         "src.main.play_audio_file",
-        lambda audio_path: event_log.append(f"play:{audio_path.name}"),
+        lambda audio_path, playback_speed: event_log.append(
+            f"play:{audio_path.name}:{playback_speed:g}x"
+        ),
     )
 
     spoken_triggers = speak_ready_habit_triggers(
@@ -768,8 +790,8 @@ def test_phone_audio_is_paused_around_queued_tts_batch(tmp_path, monkeypatch):
     assert event_log == [
         "phone:pause",
         "sleep:10",
-        f"play:{queued_habits[0]['id']}.mp3",
-        f"play:{queued_habits[1]['id']}.mp3",
+        f"play:{queued_habits[0]['id']}.mp3:1x",
+        f"play:{queued_habits[1]['id']}.mp3:1x",
         "sleep:10",
         "phone:play",
     ]
@@ -806,38 +828,46 @@ def test_random_tts_voice_is_selected_once_per_trigger(monkeypatch):
     assert voice_fetches == [True]
 
 
-def test_random_tts_voice_prefers_configured_voice_pool(monkeypatch):
-    ready_trigger = {
-        "habit": {
-            "id": "habit-1",
-            "name": REPLY_HABIT_NAME,
-            "randomTtsVoice": True,
-        },
-        "trigger": {},
-    }
+def test_random_tts_voice_can_select_each_configured_voice_for_fresh_triggers(
+    monkeypatch,
+):
+    configured_voice_ids = ["JBFqnCBsd6RMkjVDRZzb", "pNInz6obpgDQGcFmaJgB"]
+    choices = iter(configured_voice_ids)
 
-    class ChooseLastVoice:
+    class ChooseNextVoice:
         @staticmethod
         def choice(voice_ids):
-            return voice_ids[-1]
+            assert voice_ids == configured_voice_ids
+            return next(choices)
 
     def fail_if_voices_are_fetched(api_key):
         raise AssertionError("configured voice pool should avoid account discovery")
 
-    monkeypatch.setattr("src.main.secrets.SystemRandom", lambda: ChooseLastVoice())
+    monkeypatch.setattr("src.main.secrets.SystemRandom", lambda: ChooseNextVoice())
     monkeypatch.setattr(
         "src.main.fetch_elevenlabs_voice_ids", fail_if_voices_are_fetched
     )
 
-    selected_config = get_trigger_text_to_speech_config(
-        {
-            "voiceId": "JBFqnCBsd6RMkjVDRZzb",
-            "voiceIds": ["JBFqnCBsd6RMkjVDRZzb", "pNInz6obpgDQGcFmaJgB"],
-        },
-        ready_trigger,
-    )
+    text_to_speech_config = {
+        "voiceId": configured_voice_ids[0],
+        "voiceIds": configured_voice_ids,
+    }
+    selected_voice_ids = []
+    for trigger_number in range(2):
+        ready_trigger = {
+            "habit": {
+                "id": f"habit-{trigger_number}",
+                "name": REPLY_HABIT_NAME,
+                "randomTtsVoice": True,
+            },
+            "trigger": {},
+        }
+        selected_config = get_trigger_text_to_speech_config(
+            text_to_speech_config, ready_trigger
+        )
+        selected_voice_ids.append(selected_config["voiceId"])
 
-    assert selected_config["voiceId"] == "pNInz6obpgDQGcFmaJgB"
+    assert selected_voice_ids == configured_voice_ids
 
 
 def test_text_to_speech_waits_when_bluetooth_transport_is_busy(monkeypatch):

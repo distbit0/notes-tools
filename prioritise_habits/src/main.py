@@ -51,6 +51,7 @@ DUE_OUTPUT_DESKTOP_NOTIFICATION = "desktopNotification"
 DUE_OUTPUT_TEXT_TO_SPEECH = "textToSpeech"
 HABIT_AUDIO_FILE_FIELD = "audioFile"
 HABIT_RANDOM_TTS_VOICE_FIELD = "randomTtsVoice"
+HABIT_TTS_PLAYBACK_SPEED_FIELD = "ttsPlaybackSpeed"
 TRIGGER_TTS_VOICE_ID_FIELD = "ttsVoiceId"
 ELEVENLABS_API_KEY_ENV = "ELEVENLABS_API_KEY"
 PHONE_AUDIO_CONTROL_TRIGGER_URL_ENV = "PHONE_AUDIO_CONTROL_TRIGGER_URL"
@@ -85,6 +86,7 @@ ACTIVE_HABIT_FIELD_ORDER = (
     HABIT_TEXT_MAX_WORD_COUNT_FIELD,
     HABIT_TEXT_TRANSFORM_PROMPT_FIELD,
     "randomTtsVoice",
+    HABIT_TTS_PLAYBACK_SPEED_FIELD,
     "audioFile",
     "sortOrder",
     "status",
@@ -246,6 +248,7 @@ def validate_habits(habits, description):
         get_habit_audio_file_path(habit)
         validate_dynamic_habit_text(habit)
         get_habit_random_tts_voice(habit)
+        get_habit_tts_playback_speed(habit)
 
 
 def validate_unique_habit_ids(habits):
@@ -680,6 +683,20 @@ def get_habit_random_tts_voice(habit):
             f"{HABIT_RANDOM_TTS_VOICE_FIELD} with {HABIT_AUDIO_FILE_FIELD}"
         )
     return random_tts_voice
+
+
+def get_habit_tts_playback_speed(habit):
+    playback_speed = habit.get(HABIT_TTS_PLAYBACK_SPEED_FIELD, 1.0)
+    if (
+        isinstance(playback_speed, bool)
+        or not isinstance(playback_speed, (int, float))
+        or playback_speed <= 0
+    ):
+        raise ValueError(
+            f"Habit '{habit.get('name')}' {HABIT_TTS_PLAYBACK_SPEED_FIELD} "
+            "must be a positive number"
+        )
+    return float(playback_speed)
 
 
 def is_trigger_delivered(habit, trigger):
@@ -1293,7 +1310,11 @@ def get_habit_audio_path(text_to_speech_config, item):
     )
 
 
-def play_audio_file(audio_path):
+def play_audio_file(audio_path, playback_speed=1.0):
+    audio_filters = []
+    if playback_speed != 1.0:
+        audio_filters.append(f"atempo={playback_speed:g}")
+    audio_filters.append(f"adelay={AUDIO_PLAYBACK_LEAD_IN_MILLISECONDS}:all=1")
     subprocess.run(
         [
             "ffplay",
@@ -1303,7 +1324,7 @@ def play_audio_file(audio_path):
             "-loglevel",
             "error",
             "-af",
-            f"adelay={AUDIO_PLAYBACK_LEAD_IN_MILLISECONDS}:all=1",
+            ",".join(audio_filters),
             str(audio_path),
         ],
         check=True,
@@ -1381,7 +1402,9 @@ def speak_ready_habit_triggers(
                 "Skipping TTS playback because the default audio output changed"
             )
             break
-        playback_queue.append((item, audio_path))
+        playback_queue.append(
+            (item, audio_path, get_habit_tts_playback_speed(item["habit"]))
+        )
 
     if not playback_queue:
         return []
@@ -1397,7 +1420,7 @@ def speak_ready_habit_triggers(
         if phone_audio_control_trigger_url and not can_start_audio_habit_batch():
             return []
 
-        for item, audio_path in playback_queue:
+        for item, audio_path, playback_speed in playback_queue:
             if (
                 phone_audio_control_trigger_url
                 and not is_default_audio_output_bluetooth()
@@ -1406,7 +1429,7 @@ def speak_ready_habit_triggers(
                     "Skipping TTS because the default audio output is not a Bluetooth sink"
                 )
                 break
-            play_audio_file(audio_path)
+            play_audio_file(audio_path, playback_speed)
             spoken_triggers.append(item)
     except (RuntimeError, ValueError, subprocess.CalledProcessError) as error:
         logger.error(f"Text-to-speech output failed: {error}")

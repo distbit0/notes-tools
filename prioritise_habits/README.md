@@ -71,6 +71,7 @@ discard TickTick-derived metadata:
     "maxSourceWordCount": 800,
     "textTransformPrompt": "Rewrite the selected source as concise flowing prose.",
     "randomTtsVoice": true,
+    "ttsPlaybackSpeed": 2.0,
     "audioFile": "audio/read.mp3",
     "archivedTime": null,
     "sortOrder": 1
@@ -125,6 +126,7 @@ Notes:
 - If the source exceeds `maxSourceWordCount`, complete segments separated by a blank line are shuffled with fresh operating-system randomness and greedily selected while keeping the selected source strictly below the cap. If no complete segment fits, delivery fails explicitly.
 - Selected source text is transformed by non-interactive `codex exec` using `gpt-5.6-terra` with high reasoning. The generated text is stored in the ignored daily schedule and reused across output channels and retries for that trigger.
 - `randomTtsVoice` is optional and defaults to `false`. When true, the script randomly chooses from `textToSpeech.voiceIds`, or from the voices returned by the ElevenLabs account when no pool is configured, then persists that choice for retries. Account discovery requires the API key's `voices_read` permission. The flag cannot be combined with `audioFile`.
+- `ttsPlaybackSpeed` is optional and defaults to `1.0`. Set it to `2.0` to play that habit's generated or custom audio at twice its original speed while retaining the Bluetooth lead-in.
 - `audioFile` is optional. When present with `textToSpeech` enabled, it must point to an `.mp3` file and is played instead of calling ElevenLabs. Relative paths are resolved from the repo root.
 
 ## Trigger Scheduling
