@@ -38,6 +38,7 @@ from src.main import (
     get_habit_audio_file_path,
     get_habit_due_outputs,
     get_phone_audio_control_trigger_url,
+    get_text_to_speech_config,
     get_trigger_text_to_speech_config,
     get_or_create_text_to_speech_audio,
     get_ready_habit_triggers,
@@ -577,6 +578,73 @@ def test_text_to_speech_audio_is_cached(tmp_path, monkeypatch):
     ]
 
 
+def test_google_cloud_text_to_speech_audio_is_cached(tmp_path, monkeypatch):
+    text_to_speech_config = {
+        "provider": "google",
+        "languageCode": "en-US",
+        "voiceName": "en-US-Neural2-D",
+        "audioEncoding": "MP3",
+        "cacheDir": str(tmp_path),
+    }
+    fetch_calls = []
+
+    def fake_fetch(config, habit_text):
+        fetch_calls.append((config["voiceName"], habit_text))
+        return b"google cloud mp3 bytes"
+
+    monkeypatch.setattr(
+        "src.main.fetch_google_cloud_text_to_speech_audio", fake_fetch
+    )
+
+    first_audio_path = get_or_create_text_to_speech_audio(
+        text_to_speech_config, REPLY_HABIT_TEXT
+    )
+    second_audio_path = get_or_create_text_to_speech_audio(
+        text_to_speech_config, REPLY_HABIT_TEXT
+    )
+
+    assert first_audio_path == second_audio_path
+    assert first_audio_path.read_bytes() == b"google cloud mp3 bytes"
+    assert fetch_calls == [("en-US-Neural2-D", REPLY_HABIT_TEXT)]
+
+
+def test_google_cloud_text_to_speech_config_is_validated(tmp_path):
+    configured = get_text_to_speech_config(
+        {
+            "textToSpeech": {
+                "provider": "google",
+                "quotaProject": "tts-project",
+                "gcloudCommand": "/usr/bin/gcloud",
+                "languageCode": "en-US",
+                "voiceName": "en-US-Neural2-D",
+                "voiceNamePrefix": "en-US-Neural2-",
+                "audioEncoding": "mp3",
+                "cacheDir": str(tmp_path),
+            }
+        }
+    )
+
+    assert configured["provider"] == "google"
+    assert configured["audioEncoding"] == "MP3"
+    assert configured["cacheDir"] == str(tmp_path)
+
+
+def test_google_cloud_text_to_speech_config_requires_quota_project():
+    with pytest.raises(ValueError, match="textToSpeech.quotaProject"):
+        get_text_to_speech_config(
+            {
+                "textToSpeech": {
+                    "provider": "google",
+                    "gcloudCommand": "/usr/bin/gcloud",
+                    "languageCode": "en-US",
+                    "voiceName": "en-US-Neural2-D",
+                    "voiceNamePrefix": "en-US-Neural2-",
+                    "audioEncoding": "MP3",
+                }
+            }
+        )
+
+
 def test_audio_playback_adds_silence_lead_in(tmp_path, monkeypatch):
     audio_path = tmp_path / "habit.mp3"
     audio_path.write_bytes(b"cached mp3 bytes")
@@ -816,10 +884,10 @@ def test_random_tts_voice_is_selected_once_per_trigger(monkeypatch):
     monkeypatch.setattr("src.main.fetch_elevenlabs_voice_ids", fake_fetch_voice_ids)
 
     first_config = get_trigger_text_to_speech_config(
-        {"voiceId": "configured-voice"}, ready_trigger
+        {"provider": "elevenlabs", "voiceId": "configured-voice"}, ready_trigger
     )
     second_config = get_trigger_text_to_speech_config(
-        {"voiceId": "configured-voice"}, ready_trigger
+        {"provider": "elevenlabs", "voiceId": "configured-voice"}, ready_trigger
     )
 
     assert first_config["voiceId"] == "JBFqnCBsd6RMkjVDRZzb"
@@ -849,6 +917,7 @@ def test_random_tts_voice_can_select_each_configured_voice_for_fresh_triggers(
     )
 
     text_to_speech_config = {
+        "provider": "elevenlabs",
         "voiceId": configured_voice_ids[0],
         "voiceIds": configured_voice_ids,
     }
@@ -868,6 +937,43 @@ def test_random_tts_voice_can_select_each_configured_voice_for_fresh_triggers(
         selected_voice_ids.append(selected_config["voiceId"])
 
     assert selected_voice_ids == configured_voice_ids
+
+
+def test_random_google_cloud_tts_voice_is_selected_once_per_trigger(monkeypatch):
+    ready_trigger = {
+        "habit": {
+            "id": "habit-1",
+            "name": REPLY_HABIT_NAME,
+            "randomTtsVoice": True,
+        },
+        "trigger": {},
+    }
+    voice_fetches = []
+
+    def fake_fetch_voice_names(config):
+        voice_fetches.append(config["voiceNamePrefix"])
+        return ["en-US-Neural2-A"]
+
+    monkeypatch.setattr(
+        "src.main.fetch_google_cloud_voice_names", fake_fetch_voice_names
+    )
+    text_to_speech_config = {
+        "provider": "google",
+        "voiceName": "en-US-Neural2-D",
+        "voiceNamePrefix": "en-US-Neural2-",
+    }
+
+    first_config = get_trigger_text_to_speech_config(
+        text_to_speech_config, ready_trigger
+    )
+    second_config = get_trigger_text_to_speech_config(
+        text_to_speech_config, ready_trigger
+    )
+
+    assert first_config["voiceName"] == "en-US-Neural2-A"
+    assert second_config["voiceName"] == "en-US-Neural2-A"
+    assert ready_trigger["trigger"]["ttsVoiceId"] == "en-US-Neural2-A"
+    assert voice_fetches == ["en-US-Neural2-"]
 
 
 def test_text_to_speech_waits_when_bluetooth_transport_is_busy(monkeypatch):

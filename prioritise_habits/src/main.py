@@ -38,6 +38,17 @@ except ImportError:
         validate_dynamic_habit_text,
     )
 
+try:
+    from .google_cloud_tts import (
+        fetch_google_cloud_text_to_speech_audio,
+        fetch_google_cloud_voice_names,
+    )
+except ImportError:
+    from google_cloud_tts import (
+        fetch_google_cloud_text_to_speech_audio,
+        fetch_google_cloud_voice_names,
+    )
+
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
 CONFIG_FILE = PROJECT_ROOT / "config.json"
 LAST_RUN_FILE = PROJECT_ROOT / ".last_run"
@@ -67,6 +78,14 @@ DEFAULT_TEXT_TO_SPEECH_CONFIG = {
     "outputFormat": "mp3_44100_128",
     "cacheDir": "./.tts_cache",
 }
+GOOGLE_CLOUD_TEXT_TO_SPEECH_FIELDS = (
+    "quotaProject",
+    "gcloudCommand",
+    "languageCode",
+    "voiceName",
+    "voiceNamePrefix",
+    "audioEncoding",
+)
 PHONE_AUDIO_CONTROL_STATES = {"pause", "play"}
 PHONE_AUDIO_CONTROL_DELAY_SECONDS = 10
 AUDIO_PLAYBACK_LEAD_IN_MILLISECONDS = 750
@@ -167,23 +186,46 @@ def get_config_path(config, config_key):
 
 
 def get_text_to_speech_config(config):
-    text_to_speech_config = DEFAULT_TEXT_TO_SPEECH_CONFIG.copy()
     configured_values = config.get("textToSpeech", {})
     if not isinstance(configured_values, dict):
         raise ValueError("Config field 'textToSpeech' must be an object")
-    text_to_speech_config.update(configured_values)
+    provider = configured_values.get(
+        "provider", DEFAULT_TEXT_TO_SPEECH_CONFIG["provider"]
+    )
+    if provider == "elevenlabs":
+        text_to_speech_config = DEFAULT_TEXT_TO_SPEECH_CONFIG.copy()
+        text_to_speech_config.update(configured_values)
+        required_fields = ("voiceId", "modelId", "outputFormat", "cacheDir")
+    elif provider == "google":
+        text_to_speech_config = {
+            "provider": "google",
+            "cacheDir": DEFAULT_TEXT_TO_SPEECH_CONFIG["cacheDir"],
+        }
+        text_to_speech_config.update(configured_values)
+        required_fields = GOOGLE_CLOUD_TEXT_TO_SPEECH_FIELDS + ("cacheDir",)
+    else:
+        raise ValueError(
+            "textToSpeech.provider must be 'elevenlabs' or 'google'"
+        )
 
-    if text_to_speech_config["provider"] != "elevenlabs":
-        raise ValueError("Only ElevenLabs text-to-speech is supported")
-
-    for field_name in ("voiceId", "modelId", "outputFormat", "cacheDir"):
+    for field_name in required_fields:
         if not isinstance(text_to_speech_config.get(field_name), str):
             raise ValueError(f"textToSpeech.{field_name} must be a string")
         if not text_to_speech_config[field_name].strip():
             raise ValueError(f"textToSpeech.{field_name} must not be empty")
 
+    if (
+        provider == "google"
+        and text_to_speech_config["audioEncoding"].upper() != "MP3"
+    ):
+        raise ValueError("textToSpeech.audioEncoding must be MP3")
+    if provider == "google":
+        text_to_speech_config["audioEncoding"] = text_to_speech_config[
+            "audioEncoding"
+        ].upper()
+
     configured_voice_ids = text_to_speech_config.get("voiceIds")
-    if configured_voice_ids is not None:
+    if provider == "elevenlabs" and configured_voice_ids is not None:
         if (
             not isinstance(configured_voice_ids, list)
             or len(configured_voice_ids) < 2
@@ -1125,13 +1167,25 @@ def is_default_bluetooth_audio_transport_busy():
 
 
 def get_text_to_speech_audio_path(text_to_speech_config, habit_text):
-    cache_payload = {
-        "provider": text_to_speech_config["provider"],
-        "voiceId": text_to_speech_config["voiceId"],
-        "modelId": text_to_speech_config["modelId"],
-        "outputFormat": text_to_speech_config["outputFormat"],
-        "text": habit_text,
-    }
+    provider = text_to_speech_config["provider"]
+    if provider == "elevenlabs":
+        cache_payload = {
+            "provider": provider,
+            "voiceId": text_to_speech_config["voiceId"],
+            "modelId": text_to_speech_config["modelId"],
+            "outputFormat": text_to_speech_config["outputFormat"],
+            "text": habit_text,
+        }
+    elif provider == "google":
+        cache_payload = {
+            "provider": provider,
+            "languageCode": text_to_speech_config["languageCode"],
+            "voiceName": text_to_speech_config["voiceName"],
+            "audioEncoding": text_to_speech_config["audioEncoding"],
+            "text": habit_text,
+        }
+    else:
+        raise ValueError(f"Unsupported text-to-speech provider: {provider}")
     cache_key = hashlib.sha256(
         json.dumps(cache_payload, sort_keys=True).encode("utf-8")
     ).hexdigest()
@@ -1211,22 +1265,35 @@ def get_trigger_text_to_speech_config(text_to_speech_config, item):
         return text_to_speech_config
 
     trigger = item["trigger"]
-    voice_id = trigger.get(TRIGGER_TTS_VOICE_ID_FIELD)
-    if voice_id is None:
-        available_voice_ids = text_to_speech_config.get("voiceIds")
-        if available_voice_ids is None:
-            available_voice_ids = fetch_elevenlabs_voice_ids(
-                get_elevenlabs_api_key()
+    selected_voice = trigger.get(TRIGGER_TTS_VOICE_ID_FIELD)
+    if selected_voice is None:
+        if text_to_speech_config["provider"] == "elevenlabs":
+            available_voices = text_to_speech_config.get("voiceIds")
+            if available_voices is None:
+                available_voices = fetch_elevenlabs_voice_ids(
+                    get_elevenlabs_api_key()
+                )
+        elif text_to_speech_config["provider"] == "google":
+            available_voices = fetch_google_cloud_voice_names(
+                text_to_speech_config
             )
-        voice_id = secrets.SystemRandom().choice(available_voice_ids)
-        trigger[TRIGGER_TTS_VOICE_ID_FIELD] = voice_id
-    elif not isinstance(voice_id, str) or not voice_id:
+        else:
+            raise ValueError(
+                "Unsupported text-to-speech provider: "
+                f"{text_to_speech_config['provider']}"
+            )
+        selected_voice = secrets.SystemRandom().choice(available_voices)
+        trigger[TRIGGER_TTS_VOICE_ID_FIELD] = selected_voice
+    elif not isinstance(selected_voice, str) or not selected_voice:
         raise ValueError(
             f"Trigger {TRIGGER_TTS_VOICE_ID_FIELD} must be a non-empty string"
         )
 
     trigger_text_to_speech_config = text_to_speech_config.copy()
-    trigger_text_to_speech_config["voiceId"] = voice_id
+    if text_to_speech_config["provider"] == "elevenlabs":
+        trigger_text_to_speech_config["voiceId"] = selected_voice
+    else:
+        trigger_text_to_speech_config["voiceName"] = selected_voice
     return trigger_text_to_speech_config
 
 
@@ -1275,12 +1342,18 @@ def get_or_create_text_to_speech_audio(text_to_speech_config, habit_text):
     if audio_path.exists():
         return audio_path
 
-    api_key = get_elevenlabs_api_key()
-
     audio_path.parent.mkdir(parents=True, exist_ok=True)
-    audio_bytes = fetch_elevenlabs_text_to_speech_audio(
-        text_to_speech_config, habit_text, api_key
-    )
+    provider = text_to_speech_config["provider"]
+    if provider == "elevenlabs":
+        audio_bytes = fetch_elevenlabs_text_to_speech_audio(
+            text_to_speech_config, habit_text, get_elevenlabs_api_key()
+        )
+    elif provider == "google":
+        audio_bytes = fetch_google_cloud_text_to_speech_audio(
+            text_to_speech_config, habit_text
+        )
+    else:
+        raise ValueError(f"Unsupported text-to-speech provider: {provider}")
     temporary_path = audio_path.with_suffix(".tmp")
     with open(temporary_path, "wb") as audio_file:
         audio_file.write(audio_bytes)
