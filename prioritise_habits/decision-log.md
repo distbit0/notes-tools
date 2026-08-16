@@ -9,6 +9,7 @@
 
 - Each due habit receives one or more randomly timed triggers from 06:00 through 12:00. `.habit_trigger_schedule` persists each output channel's delivery separately so a pending channel cannot repeat already delivered ones.
 - `writeToMd`, desktop notification, and text-to-speech are independent outputs. Completion remains based on all configured daily triggers, not one particular channel.
+- Dynamic source-backed habit text and a randomly selected TTS voice are materialized once per trigger and persisted in the ignored daily schedule. All output channels and delivery retries therefore use the same text and voice, while the next trigger gets fresh source sampling, LLM variation, and voice selection.
 
 ## Audio delivery is gated, not degraded
 

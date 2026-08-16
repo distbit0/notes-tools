@@ -38,6 +38,7 @@ from src.main import (
     get_habit_audio_file_path,
     get_habit_due_outputs,
     get_phone_audio_control_trigger_url,
+    get_trigger_text_to_speech_config,
     get_or_create_text_to_speech_audio,
     get_ready_habit_triggers,
     get_ready_triggers_for_due_output,
@@ -734,8 +735,8 @@ def test_phone_audio_is_paused_around_queued_tts_batch(tmp_path, monkeypatch):
     ]
     event_log = []
 
-    def fake_get_habit_audio_path(config, habit):
-        return tmp_path / f"{habit['id']}.mp3"
+    def fake_get_habit_audio_path(config, item):
+        return tmp_path / f"{item['habit']['id']}.mp3"
 
     monkeypatch.setattr("src.main.is_default_audio_output_bluetooth", lambda: True)
     monkeypatch.setattr(
@@ -772,6 +773,71 @@ def test_phone_audio_is_paused_around_queued_tts_batch(tmp_path, monkeypatch):
         "sleep:10",
         "phone:play",
     ]
+
+
+def test_random_tts_voice_is_selected_once_per_trigger(monkeypatch):
+    ready_trigger = {
+        "habit": {
+            "id": "habit-1",
+            "name": REPLY_HABIT_NAME,
+            "randomTtsVoice": True,
+        },
+        "trigger": {},
+    }
+    voice_fetches = []
+
+    def fake_fetch_voice_ids(api_key):
+        voice_fetches.append(bool(api_key))
+        return ["JBFqnCBsd6RMkjVDRZzb"]
+
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "redacted-test-key")
+    monkeypatch.setattr("src.main.fetch_elevenlabs_voice_ids", fake_fetch_voice_ids)
+
+    first_config = get_trigger_text_to_speech_config(
+        {"voiceId": "configured-voice"}, ready_trigger
+    )
+    second_config = get_trigger_text_to_speech_config(
+        {"voiceId": "configured-voice"}, ready_trigger
+    )
+
+    assert first_config["voiceId"] == "JBFqnCBsd6RMkjVDRZzb"
+    assert second_config["voiceId"] == "JBFqnCBsd6RMkjVDRZzb"
+    assert ready_trigger["trigger"]["ttsVoiceId"] == "JBFqnCBsd6RMkjVDRZzb"
+    assert voice_fetches == [True]
+
+
+def test_random_tts_voice_prefers_configured_voice_pool(monkeypatch):
+    ready_trigger = {
+        "habit": {
+            "id": "habit-1",
+            "name": REPLY_HABIT_NAME,
+            "randomTtsVoice": True,
+        },
+        "trigger": {},
+    }
+
+    class ChooseLastVoice:
+        @staticmethod
+        def choice(voice_ids):
+            return voice_ids[-1]
+
+    def fail_if_voices_are_fetched(api_key):
+        raise AssertionError("configured voice pool should avoid account discovery")
+
+    monkeypatch.setattr("src.main.secrets.SystemRandom", lambda: ChooseLastVoice())
+    monkeypatch.setattr(
+        "src.main.fetch_elevenlabs_voice_ids", fail_if_voices_are_fetched
+    )
+
+    selected_config = get_trigger_text_to_speech_config(
+        {
+            "voiceId": "JBFqnCBsd6RMkjVDRZzb",
+            "voiceIds": ["JBFqnCBsd6RMkjVDRZzb", "pNInz6obpgDQGcFmaJgB"],
+        },
+        ready_trigger,
+    )
+
+    assert selected_config["voiceId"] == "pNInz6obpgDQGcFmaJgB"
 
 
 def test_text_to_speech_waits_when_bluetooth_transport_is_busy(monkeypatch):

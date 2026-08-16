@@ -12,6 +12,7 @@ This script prioritizes your due habits from a local JSON file. It does not call
 - Records today's completion in the local `checkins` store.
 - Samples each due habit trigger time between 06:00 and 12:00 local time.
 - Writes ready habit names to enabled due outputs once their sampled trigger time has passed.
+- Can sample paragraph-like segments from a text file and transform them into fresh habit text with Codex.
 - Speaks ready habit names from cached ElevenLabs MP3s, or plays a configured habit MP3 file, when the default audio output is Bluetooth.
 
 ## Configuration
@@ -26,6 +27,10 @@ Edit [`config.json`](config.json):
   "textToSpeech": {
     "provider": "elevenlabs",
     "voiceId": "JBFqnCBsd6RMkjVDRZzb",
+    "voiceIds": [
+      "JBFqnCBsd6RMkjVDRZzb",
+      "pNInz6obpgDQGcFmaJgB"
+    ],
     "modelId": "eleven_multilingual_v2",
     "outputFormat": "mp3_44100_128",
     "cacheDir": "./.tts_cache"
@@ -36,7 +41,7 @@ Edit [`config.json`](config.json):
 - `lookBackDays`: number of days used when calculating completion rate.
 - `habitsStoreFile`: path to the archived habit and check-in store.
 - `activeHabitsFile`: path to the editable non-archived habits file.
-- `textToSpeech`: ElevenLabs voice/model/output settings and MP3 cache directory.
+- `textToSpeech`: ElevenLabs voice/model/output settings and MP3 cache directory. `voiceId` is the fixed default; optional `voiceIds` supplies a pool of at least two unique IDs for habits with random voice enabled.
 
 Relative paths are resolved from the repo root.
 Set `ELEVENLABS_API_KEY` in `.env`. The key is not logged or committed.
@@ -62,6 +67,10 @@ discard TickTick-derived metadata:
       "desktopNotification": false,
       "textToSpeech": true
     },
+    "textSourceFile": "/home/user/notes/advice.md",
+    "maxSourceWordCount": 800,
+    "textTransformPrompt": "Rewrite the selected source as concise flowing prose.",
+    "randomTtsVoice": true,
     "audioFile": "audio/read.mp3",
     "archivedTime": null,
     "sortOrder": 1
@@ -111,6 +120,11 @@ Notes:
 - `dailyTriggerCount` is optional and defaults to `1`. Use `2` for a habit that should trigger twice on each due day.
 - `dueOutputs` is optional and defaults to `writeToMd` and `textToSpeech` enabled.
 - Set `writeToMd`, `desktopNotification`, and `textToSpeech` independently.
+- `textSourceFile` optionally replaces the hardcoded `name` as the delivered habit text. `name` remains the habit's short identity and prioritization label. Relative source paths are resolved from the project root.
+- A habit with `textSourceFile` must also set a positive integer `maxSourceWordCount` and a non-empty `textTransformPrompt`.
+- If the source exceeds `maxSourceWordCount`, complete segments separated by a blank line are shuffled with fresh operating-system randomness and greedily selected while keeping the selected source strictly below the cap. If no complete segment fits, delivery fails explicitly.
+- Selected source text is transformed by non-interactive `codex exec` using `gpt-5.6-terra` with high reasoning. The generated text is stored in the ignored daily schedule and reused across output channels and retries for that trigger.
+- `randomTtsVoice` is optional and defaults to `false`. When true, the script randomly chooses from `textToSpeech.voiceIds`, or from the voices returned by the ElevenLabs account when no pool is configured, then persists that choice for retries. Account discovery requires the API key's `voices_read` permission. The flag cannot be combined with `audioFile`.
 - `audioFile` is optional. When present with `textToSpeech` enabled, it must point to an `.mp3` file and is played instead of calling ElevenLabs. Relative paths are resolved from the repo root.
 
 ## Trigger Scheduling
@@ -120,6 +134,7 @@ For each due habit trigger, the script samples a local time from 06:00 through 1
 Only triggers whose sampled time has passed are written to their enabled outputs.
 Desktop notifications are created with `notify-send` using critical urgency and no expiry.
 Text-to-speech uses cached ElevenLabs MP3 files and plays them sequentially with `ffplay`, adding a short silent lead-in so Bluetooth outputs do not clip the first word.
+Without a configured voice pool, random voice selection uses ElevenLabs' paginated `GET /v2/voices` endpoint.
 Habits can set `audioFile` to play a custom MP3 through the same gated audio channel instead of generating speech.
 Audio only runs when `wpctl inspect @DEFAULT_AUDIO_SINK@` shows a Bluetooth sink.
 TTS is also deferred while the default Bluetooth sink's BlueZ media transport is already streaming from this laptop.

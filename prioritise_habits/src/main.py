@@ -6,6 +6,7 @@ import os
 import pathlib
 import random
 import re
+import secrets
 import subprocess
 import sys
 import time as time_module
@@ -15,6 +16,27 @@ import urllib.request
 from datetime import datetime, time, timedelta, timezone
 
 from loguru import logger
+
+try:
+    from .dynamic_habit_text import (
+        HABIT_RENDERED_TEXT_FIELD,
+        HABIT_TEXT_MAX_WORD_COUNT_FIELD,
+        HABIT_TEXT_SOURCE_FILE_FIELD,
+        HABIT_TEXT_TRANSFORM_PROMPT_FIELD,
+        get_trigger_habit_text,
+        materialize_trigger_habit_text,
+        validate_dynamic_habit_text,
+    )
+except ImportError:
+    from dynamic_habit_text import (
+        HABIT_RENDERED_TEXT_FIELD,
+        HABIT_TEXT_MAX_WORD_COUNT_FIELD,
+        HABIT_TEXT_SOURCE_FILE_FIELD,
+        HABIT_TEXT_TRANSFORM_PROMPT_FIELD,
+        get_trigger_habit_text,
+        materialize_trigger_habit_text,
+        validate_dynamic_habit_text,
+    )
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
 CONFIG_FILE = PROJECT_ROOT / "config.json"
@@ -28,6 +50,8 @@ DUE_OUTPUT_WRITE_TO_MD = "writeToMd"
 DUE_OUTPUT_DESKTOP_NOTIFICATION = "desktopNotification"
 DUE_OUTPUT_TEXT_TO_SPEECH = "textToSpeech"
 HABIT_AUDIO_FILE_FIELD = "audioFile"
+HABIT_RANDOM_TTS_VOICE_FIELD = "randomTtsVoice"
+TRIGGER_TTS_VOICE_ID_FIELD = "ttsVoiceId"
 ELEVENLABS_API_KEY_ENV = "ELEVENLABS_API_KEY"
 PHONE_AUDIO_CONTROL_TRIGGER_URL_ENV = "PHONE_AUDIO_CONTROL_TRIGGER_URL"
 DEFAULT_DUE_OUTPUTS = {
@@ -57,6 +81,10 @@ ACTIVE_HABIT_FIELD_ORDER = (
     "unit",
     "dailyTriggerCount",
     "dueOutputs",
+    HABIT_TEXT_SOURCE_FILE_FIELD,
+    HABIT_TEXT_MAX_WORD_COUNT_FIELD,
+    HABIT_TEXT_TRANSFORM_PROMPT_FIELD,
+    "randomTtsVoice",
     "audioFile",
     "sortOrder",
     "status",
@@ -152,6 +180,23 @@ def get_text_to_speech_config(config):
         if not text_to_speech_config[field_name].strip():
             raise ValueError(f"textToSpeech.{field_name} must not be empty")
 
+    configured_voice_ids = text_to_speech_config.get("voiceIds")
+    if configured_voice_ids is not None:
+        if (
+            not isinstance(configured_voice_ids, list)
+            or len(configured_voice_ids) < 2
+            or any(
+                not isinstance(voice_id, str) or not voice_id.strip()
+                for voice_id in configured_voice_ids
+            )
+        ):
+            raise ValueError(
+                "textToSpeech.voiceIds must be a list of at least two "
+                "non-empty strings"
+            )
+        if len(set(configured_voice_ids)) != len(configured_voice_ids):
+            raise ValueError("textToSpeech.voiceIds must not contain duplicates")
+
     cache_dir = pathlib.Path(text_to_speech_config["cacheDir"]).expanduser()
     if not cache_dir.is_absolute():
         cache_dir = (PROJECT_ROOT / cache_dir).resolve()
@@ -199,6 +244,8 @@ def validate_habits(habits, description):
             raise ValueError(f"Each {description} habit must include a 'name'")
         get_habit_due_outputs(habit)
         get_habit_audio_file_path(habit)
+        validate_dynamic_habit_text(habit)
+        get_habit_random_tts_voice(habit)
 
 
 def validate_unique_habit_ids(habits):
@@ -620,6 +667,21 @@ def get_habit_audio_file_path(habit):
     return audio_path
 
 
+def get_habit_random_tts_voice(habit):
+    random_tts_voice = habit.get(HABIT_RANDOM_TTS_VOICE_FIELD, False)
+    if not isinstance(random_tts_voice, bool):
+        raise ValueError(
+            f"Habit '{habit.get('name')}' {HABIT_RANDOM_TTS_VOICE_FIELD} "
+            "must be a boolean"
+        )
+    if random_tts_voice and habit.get(HABIT_AUDIO_FILE_FIELD) is not None:
+        raise ValueError(
+            f"Habit '{habit.get('name')}' cannot combine "
+            f"{HABIT_RANDOM_TTS_VOICE_FIELD} with {HABIT_AUDIO_FILE_FIELD}"
+        )
+    return random_tts_voice
+
+
 def is_trigger_delivered(habit, trigger):
     delivered_outputs = trigger.get("deliveredOutputs", {})
     return all(
@@ -851,10 +913,12 @@ def append_ready_habit_triggers(notes_path, ready_triggers):
             existing_lines = notes_file.readlines()
 
     existing_line_set = {line.strip() for line in existing_lines if line.strip()}
-    habit_lines = [
-        remove_existing_prefix(item["habit"].get("name", "")).strip().lower()
-        for item in ready_triggers
-    ]
+    habit_lines = []
+    for item in ready_triggers:
+        habit_line = get_trigger_habit_text(item)
+        if HABIT_RENDERED_TEXT_FIELD not in item["trigger"]:
+            habit_line = habit_line.lower()
+        habit_lines.append(habit_line)
     new_habit_lines = [
         line for line in habit_lines if line and line not in existing_line_set
     ]
@@ -873,8 +937,8 @@ def append_ready_habit_triggers(notes_path, ready_triggers):
 def create_persistent_desktop_notifications(ready_triggers):
     notification_count = 0
     for item in ready_triggers:
-        habit_name = remove_existing_prefix(item["habit"].get("name", "")).strip()
-        if not habit_name:
+        habit_text = get_trigger_habit_text(item)
+        if not habit_text:
             continue
         subprocess.run(
             [
@@ -883,7 +947,7 @@ def create_persistent_desktop_notifications(ready_triggers):
                 "--urgency=critical",
                 "--expire-time=0",
                 "Habit due",
-                habit_name,
+                habit_text,
             ],
             check=True,
         )
@@ -894,14 +958,13 @@ def create_persistent_desktop_notifications(ready_triggers):
     return notification_count
 
 
-def get_spoken_habit_text(habit):
-    habit_name = remove_existing_prefix(habit.get("name", "")).strip()
-    habit_name = re.sub(
+def get_spoken_habit_text(habit_text):
+    spoken_text = re.sub(
         r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]",
         lambda match: match.group(2) or match.group(1),
-        habit_name,
+        habit_text,
     )
-    return habit_name.replace("`", "").strip()
+    return spoken_text.replace("`", "").strip()
 
 
 def is_bluetooth_audio_sink_metadata(wpctl_output):
@@ -1058,6 +1121,98 @@ def get_text_to_speech_audio_path(text_to_speech_config, habit_text):
     return pathlib.Path(text_to_speech_config["cacheDir"]) / f"{cache_key}.mp3"
 
 
+def get_elevenlabs_api_key():
+    api_key = os.environ.get(ELEVENLABS_API_KEY_ENV)
+    if not api_key:
+        raise RuntimeError(
+            f"Missing required environment variable: {ELEVENLABS_API_KEY_ENV}"
+        )
+    return api_key
+
+
+def fetch_elevenlabs_voice_ids(api_key):
+    voice_ids = []
+    next_page_token = None
+    seen_page_tokens = set()
+    while True:
+        query_parameters = {"page_size": 100}
+        if next_page_token is not None:
+            query_parameters["next_page_token"] = next_page_token
+        url = (
+            "https://api.elevenlabs.io/v2/voices?"
+            + urllib.parse.urlencode(query_parameters)
+        )
+        request = urllib.request.Request(
+            url,
+            headers={"Accept": "application/json", "xi-api-key": api_key},
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=45) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            error_body = error.read().decode("utf-8", errors="replace").strip()
+            raise RuntimeError(
+                f"ElevenLabs voice listing failed with HTTP {error.code}: "
+                f"{error_body[:300]}"
+            ) from error
+        except urllib.error.URLError as error:
+            raise RuntimeError(
+                f"ElevenLabs voice listing failed: {error.reason}"
+            ) from error
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            raise RuntimeError("ElevenLabs voice listing returned invalid JSON") from error
+
+        voices = payload.get("voices") if isinstance(payload, dict) else None
+        if not isinstance(voices, list):
+            raise RuntimeError("ElevenLabs voice listing omitted the voices list")
+        for voice in voices:
+            voice_id = voice.get("voice_id") if isinstance(voice, dict) else None
+            if isinstance(voice_id, str) and voice_id and voice_id not in voice_ids:
+                voice_ids.append(voice_id)
+
+        if not payload.get("has_more"):
+            break
+        next_page_token = payload.get("next_page_token")
+        if (
+            not isinstance(next_page_token, str)
+            or not next_page_token
+            or next_page_token in seen_page_tokens
+        ):
+            raise RuntimeError(
+                "ElevenLabs voice listing returned invalid pagination state"
+            )
+        seen_page_tokens.add(next_page_token)
+
+    if not voice_ids:
+        raise RuntimeError("ElevenLabs voice listing returned no available voices")
+    return voice_ids
+
+
+def get_trigger_text_to_speech_config(text_to_speech_config, item):
+    if not get_habit_random_tts_voice(item["habit"]):
+        return text_to_speech_config
+
+    trigger = item["trigger"]
+    voice_id = trigger.get(TRIGGER_TTS_VOICE_ID_FIELD)
+    if voice_id is None:
+        available_voice_ids = text_to_speech_config.get("voiceIds")
+        if available_voice_ids is None:
+            available_voice_ids = fetch_elevenlabs_voice_ids(
+                get_elevenlabs_api_key()
+            )
+        voice_id = secrets.SystemRandom().choice(available_voice_ids)
+        trigger[TRIGGER_TTS_VOICE_ID_FIELD] = voice_id
+    elif not isinstance(voice_id, str) or not voice_id:
+        raise ValueError(
+            f"Trigger {TRIGGER_TTS_VOICE_ID_FIELD} must be a non-empty string"
+        )
+
+    trigger_text_to_speech_config = text_to_speech_config.copy()
+    trigger_text_to_speech_config["voiceId"] = voice_id
+    return trigger_text_to_speech_config
+
+
 def build_elevenlabs_text_to_speech_request(text_to_speech_config, habit_text, api_key):
     encoded_voice_id = urllib.parse.quote(text_to_speech_config["voiceId"], safe="")
     encoded_output_format = urllib.parse.quote(
@@ -1103,11 +1258,7 @@ def get_or_create_text_to_speech_audio(text_to_speech_config, habit_text):
     if audio_path.exists():
         return audio_path
 
-    api_key = os.environ.get(ELEVENLABS_API_KEY_ENV)
-    if not api_key:
-        raise RuntimeError(
-            f"Missing required environment variable: {ELEVENLABS_API_KEY_ENV}"
-        )
+    api_key = get_elevenlabs_api_key()
 
     audio_path.parent.mkdir(parents=True, exist_ok=True)
     audio_bytes = fetch_elevenlabs_text_to_speech_audio(
@@ -1121,7 +1272,8 @@ def get_or_create_text_to_speech_audio(text_to_speech_config, habit_text):
     return audio_path
 
 
-def get_habit_audio_path(text_to_speech_config, habit):
+def get_habit_audio_path(text_to_speech_config, item):
+    habit = item["habit"]
     custom_audio_path = get_habit_audio_file_path(habit)
     if custom_audio_path is not None:
         if not custom_audio_path.is_file():
@@ -1130,10 +1282,15 @@ def get_habit_audio_path(text_to_speech_config, habit):
             )
         return custom_audio_path
 
-    habit_text = get_spoken_habit_text(habit)
+    habit_text = get_spoken_habit_text(get_trigger_habit_text(item))
     if not habit_text:
         return None
-    return get_or_create_text_to_speech_audio(text_to_speech_config, habit_text)
+    trigger_text_to_speech_config = get_trigger_text_to_speech_config(
+        text_to_speech_config, item
+    )
+    return get_or_create_text_to_speech_audio(
+        trigger_text_to_speech_config, habit_text
+    )
 
 
 def play_audio_file(audio_path):
@@ -1212,7 +1369,7 @@ def speak_ready_habit_triggers(
             )
             break
         try:
-            audio_path = get_habit_audio_path(text_to_speech_config, item["habit"])
+            audio_path = get_habit_audio_path(text_to_speech_config, item)
         except (RuntimeError, ValueError) as error:
             logger.error(f"Text-to-speech output failed: {error}")
             break
@@ -1315,6 +1472,21 @@ def main(test_mode=None):
             now = datetime.now().astimezone()
             ready_triggers, habit_trigger_schedule = get_ready_habit_triggers(
                 due_habits_today, HABIT_TRIGGER_SCHEDULE_FILE, now
+            )
+            materialized_ready_triggers = []
+            for item in ready_triggers:
+                try:
+                    materialize_trigger_habit_text(item)
+                except (OSError, RuntimeError, ValueError) as error:
+                    logger.error(
+                        f"Dynamic text generation failed for habit "
+                        f"'{item['habit'].get('name')}': {error}"
+                    )
+                    continue
+                materialized_ready_triggers.append(item)
+            ready_triggers = materialized_ready_triggers
+            save_habit_trigger_schedule(
+                HABIT_TRIGGER_SCHEDULE_FILE, habit_trigger_schedule
             )
             notes_ready_triggers = get_ready_triggers_for_due_output(
                 ready_triggers, DUE_OUTPUT_WRITE_TO_MD
