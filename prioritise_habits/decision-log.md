@@ -10,9 +10,11 @@
 - Each due habit receives one or more randomly timed triggers from 06:00 through 12:00. `.habit_trigger_schedule` persists each output channel's delivery separately so a pending channel cannot repeat already delivered ones.
 - `writeToMd`, desktop notification, and text-to-speech are independent outputs. Completion remains based on all configured daily triggers, not one particular channel.
 - Dynamic source-backed habit text and a randomly selected TTS voice are materialized once per trigger and persisted in the ignored daily schedule. All output channels and delivery retries therefore use the same text and voice, while the next trigger gets fresh source sampling, LLM variation, and voice selection.
+- Dynamic source sampling uses a random contiguous window rather than shuffled fragments. This keeps local context and source order while allowing every line inside oversized sections to be selected. Generated length remains a prompt-level judgment rather than a post-generation rejection condition.
 
 ## Audio delivery is gated, not degraded
 
 - Text-to-speech and custom audio remain pending until the default sink is Bluetooth. A missing custom audio file is an error and never falls back to generated speech or laptop speakers.
 - Playback is sequential under a process lock because the every-minute scheduler can otherwise overlap long batches. Phone audio is paused once around the whole batch and resumed once afterward.
 - Project audio-control configuration comes from the ignored `.env`, and generated speech is cached locally to avoid repeated API spend.
+- `[[PAUSE]]` is a provider-independent TTS control marker. Each non-empty segment is synthesized and cached independently, then playback inserts the globally configured pause without speaking or displaying the marker.

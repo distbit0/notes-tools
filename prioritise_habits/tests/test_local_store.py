@@ -627,6 +627,7 @@ def test_google_cloud_text_to_speech_config_is_validated(tmp_path):
     assert configured["provider"] == "google"
     assert configured["audioEncoding"] == "MP3"
     assert configured["cacheDir"] == str(tmp_path)
+    assert configured["pauseSeconds"] == 5.0
 
 
 def test_google_cloud_text_to_speech_config_requires_quota_project():
@@ -797,6 +798,59 @@ def test_text_to_speech_speaks_sequentially_and_stops_without_bluetooth(
     assert [(path.name, speed) for path, speed in played_paths] == [("0.mp3", 2.0)]
 
 
+def test_text_to_speech_pause_marker_splits_audio_and_waits_between_segments(
+    tmp_path, monkeypatch
+):
+    text_to_speech_config = {
+        "provider": "google",
+        "cacheDir": str(tmp_path),
+        "pauseSeconds": 5.0,
+    }
+    ready_triggers = [
+        {
+            "habit": {
+                "id": "habit-1",
+                "name": REPLY_HABIT_NAME,
+                "dueOutputs": {"textToSpeech": True},
+            },
+            "trigger": {
+                "time": "2026-06-12T06:30:00+07:00",
+                "habitText": (
+                    f"{REPLY_HABIT_TEXT} [[PAUSE]] {NOTIFICATION_HABIT_TEXT}"
+                ),
+            },
+        }
+    ]
+    generated_text = []
+    event_log = []
+
+    def fake_get_audio(config, habit_text):
+        audio_path = tmp_path / f"{len(generated_text)}.mp3"
+        audio_path.write_bytes(b"cached mp3 bytes")
+        generated_text.append(habit_text)
+        return audio_path
+
+    monkeypatch.setattr("src.main.is_default_audio_output_bluetooth", lambda: True)
+    monkeypatch.setattr(
+        "src.main.is_default_bluetooth_audio_transport_busy", lambda: False
+    )
+    monkeypatch.setattr("src.main.get_or_create_text_to_speech_audio", fake_get_audio)
+    monkeypatch.setattr(
+        "src.main.play_audio_file",
+        lambda path, playback_speed: event_log.append(f"play:{path.name}"),
+    )
+    monkeypatch.setattr(
+        "src.main.time_module.sleep",
+        lambda seconds: event_log.append(f"sleep:{seconds:g}"),
+    )
+
+    spoken_triggers = speak_ready_habit_triggers(text_to_speech_config, ready_triggers)
+
+    assert spoken_triggers == ready_triggers
+    assert generated_text == [REPLY_HABIT_TEXT, NOTIFICATION_HABIT_TEXT]
+    assert event_log == ["play:0.mp3", "sleep:5", "play:1.mp3"]
+
+
 def test_phone_audio_control_url_replaces_state_from_environment():
     trigger_url = get_phone_audio_control_trigger_url()
 
@@ -823,14 +877,14 @@ def test_phone_audio_is_paused_around_queued_tts_batch(tmp_path, monkeypatch):
     ]
     event_log = []
 
-    def fake_get_habit_audio_path(config, item):
-        return tmp_path / f"{item['habit']['id']}.mp3"
+    def fake_get_habit_audio_paths(config, item):
+        return [tmp_path / f"{item['habit']['id']}.mp3"]
 
     monkeypatch.setattr("src.main.is_default_audio_output_bluetooth", lambda: True)
     monkeypatch.setattr(
         "src.main.is_default_bluetooth_audio_transport_busy", lambda: False
     )
-    monkeypatch.setattr("src.main.get_habit_audio_path", fake_get_habit_audio_path)
+    monkeypatch.setattr("src.main.get_habit_audio_paths", fake_get_habit_audio_paths)
     monkeypatch.setattr(
         "src.main.send_phone_audio_control",
         lambda trigger_url, state: event_log.append(f"phone:{state}"),

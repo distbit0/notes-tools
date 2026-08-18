@@ -83,35 +83,58 @@ def select_habit_source_text(source_text, max_word_count, random_generator=None)
     if count_words(stripped_source_text) <= max_word_count:
         return stripped_source_text
 
-    segments = [
-        segment.strip()
-        for segment in re.split(r"\r?\n[ \t]*\r?\n+", stripped_source_text)
-        if segment.strip()
+    source_lines = stripped_source_text.splitlines()
+    line_word_counts = [count_words(line) for line in source_lines]
+    oversized_line_numbers = [
+        line_number
+        for line_number, line_word_count in enumerate(line_word_counts, start=1)
+        if line_word_count >= max_word_count
     ]
-    eligible_segments = [
-        segment for segment in segments if count_words(segment) < max_word_count
-    ]
-    if not eligible_segments:
+    if oversized_line_numbers:
         raise ValueError(
-            "Habit text source has no complete segment below maxSourceWordCount"
+            "Habit text source lines must each remain below maxSourceWordCount; "
+            f"oversized lines: {oversized_line_numbers}"
         )
+
+    content_line_indexes = [
+        line_index
+        for line_index, line_word_count in enumerate(line_word_counts)
+        if line_word_count
+    ]
+    if not content_line_indexes:
+        raise ValueError("Habit text source file is empty")
 
     random_source = random_generator or secrets.SystemRandom()
-    random_source.shuffle(eligible_segments)
-    selected_segments = []
-    selected_word_count = 0
-    for segment in eligible_segments:
-        segment_word_count = count_words(segment)
-        if selected_word_count + segment_word_count >= max_word_count:
-            continue
-        selected_segments.append(segment)
-        selected_word_count += segment_word_count
+    selected_start = random_source.choice(content_line_indexes)
+    selected_end = selected_start
+    selected_word_count = line_word_counts[selected_start]
 
-    if not selected_segments:
-        raise ValueError(
-            "Habit text source has no segment combination below maxSourceWordCount"
-        )
-    return "\n\n".join(selected_segments)
+    while True:
+        expandable_sides = []
+        if (
+            selected_start > 0
+            and selected_word_count + line_word_counts[selected_start - 1]
+            < max_word_count
+        ):
+            expandable_sides.append("before")
+        if (
+            selected_end + 1 < len(source_lines)
+            and selected_word_count + line_word_counts[selected_end + 1]
+            < max_word_count
+        ):
+            expandable_sides.append("after")
+        if not expandable_sides:
+            break
+
+        selected_side = random_source.choice(expandable_sides)
+        if selected_side == "before":
+            selected_start -= 1
+            selected_word_count += line_word_counts[selected_start]
+        else:
+            selected_end += 1
+            selected_word_count += line_word_counts[selected_end]
+
+    return "\n".join(source_lines[selected_start : selected_end + 1]).strip()
 
 
 def build_codex_transform_input(transform_prompt, source_text):

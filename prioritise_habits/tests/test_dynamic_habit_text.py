@@ -17,18 +17,35 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 README_TEXT = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
 
 
-def test_source_sampling_uses_complete_segments_below_strict_word_cap():
+def test_source_sampling_uses_contiguous_source_window_below_strict_word_cap():
     selected_text = select_habit_source_text(
         README_TEXT,
         100,
         random_generator=random.Random(20260816),
     )
-    source_segments = {
-        segment.strip() for segment in README_TEXT.split("\n\n") if segment.strip()
-    }
 
     assert count_words(selected_text) < 100
-    assert set(selected_text.split("\n\n")).issubset(source_segments)
+    assert selected_text in README_TEXT
+
+
+def test_source_sampling_can_reach_content_inside_oversized_paragraph():
+    oversized_paragraph = max(
+        README_TEXT.split("\n\n"),
+        key=count_words,
+    ).strip()
+    target_line = max(oversized_paragraph.splitlines(), key=count_words).strip()
+
+    selected_windows = [
+        select_habit_source_text(
+            README_TEXT,
+            100,
+            random_generator=random.Random(random_seed),
+        )
+        for random_seed in range(500)
+    ]
+
+    assert count_words(oversized_paragraph) >= 100
+    assert any(target_line in selected_window for selected_window in selected_windows)
 
 
 def test_source_sampling_returns_complete_file_when_within_cap():
@@ -37,11 +54,12 @@ def test_source_sampling_returns_complete_file_when_within_cap():
     assert select_habit_source_text(source_text, count_words(source_text)) == source_text
 
 
-def test_source_sampling_rejects_when_no_complete_segment_fits():
-    source_text = README_TEXT.split("\n\n", 1)[0]
+def test_source_sampling_rejects_line_at_or_above_word_cap():
+    longest_source_line = max(README_TEXT.splitlines(), key=count_words)
+    strict_word_cap = count_words(longest_source_line)
 
-    with pytest.raises(ValueError, match="no complete segment"):
-        select_habit_source_text(source_text, 1)
+    with pytest.raises(ValueError, match="oversized lines"):
+        select_habit_source_text(README_TEXT, strict_word_cap)
 
 
 def test_codex_transform_uses_noninteractive_terra_high(tmp_path, monkeypatch):

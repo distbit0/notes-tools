@@ -49,6 +49,14 @@ except ImportError:
         fetch_google_cloud_voice_names,
     )
 
+try:
+    from .tts_text import (
+        remove_tts_pause_markers,
+        split_tts_text,
+    )
+except ImportError:
+    from tts_text import remove_tts_pause_markers, split_tts_text
+
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
 CONFIG_FILE = PROJECT_ROOT / "config.json"
 LAST_RUN_FILE = PROJECT_ROOT / ".last_run"
@@ -64,6 +72,7 @@ HABIT_AUDIO_FILE_FIELD = "audioFile"
 HABIT_RANDOM_TTS_VOICE_FIELD = "randomTtsVoice"
 HABIT_TTS_PLAYBACK_SPEED_FIELD = "ttsPlaybackSpeed"
 TRIGGER_TTS_VOICE_ID_FIELD = "ttsVoiceId"
+TEXT_TO_SPEECH_PAUSE_SECONDS_FIELD = "pauseSeconds"
 ELEVENLABS_API_KEY_ENV = "ELEVENLABS_API_KEY"
 PHONE_AUDIO_CONTROL_TRIGGER_URL_ENV = "PHONE_AUDIO_CONTROL_TRIGGER_URL"
 DEFAULT_DUE_OUTPUTS = {
@@ -77,6 +86,7 @@ DEFAULT_TEXT_TO_SPEECH_CONFIG = {
     "modelId": "eleven_multilingual_v2",
     "outputFormat": "mp3_44100_128",
     "cacheDir": "./.tts_cache",
+    TEXT_TO_SPEECH_PAUSE_SECONDS_FIELD: 5.0,
 }
 GOOGLE_CLOUD_TEXT_TO_SPEECH_FIELDS = (
     "quotaProject",
@@ -208,6 +218,20 @@ def get_text_to_speech_config(config):
         raise ValueError(
             "textToSpeech.provider must be 'elevenlabs' or 'google'"
         )
+
+    pause_seconds = text_to_speech_config.get(
+        TEXT_TO_SPEECH_PAUSE_SECONDS_FIELD,
+        DEFAULT_TEXT_TO_SPEECH_CONFIG[TEXT_TO_SPEECH_PAUSE_SECONDS_FIELD],
+    )
+    if (
+        isinstance(pause_seconds, bool)
+        or not isinstance(pause_seconds, (int, float))
+        or pause_seconds <= 0
+    ):
+        raise ValueError("textToSpeech.pauseSeconds must be a positive number")
+    text_to_speech_config[TEXT_TO_SPEECH_PAUSE_SECONDS_FIELD] = float(
+        pause_seconds
+    )
 
     for field_name in required_fields:
         if not isinstance(text_to_speech_config.get(field_name), str):
@@ -975,7 +999,7 @@ def append_ready_habit_triggers(notes_path, ready_triggers):
     existing_line_set = {line.strip() for line in existing_lines if line.strip()}
     habit_lines = []
     for item in ready_triggers:
-        habit_line = get_trigger_habit_text(item)
+        habit_line = remove_tts_pause_markers(get_trigger_habit_text(item))
         if HABIT_RENDERED_TEXT_FIELD not in item["trigger"]:
             habit_line = habit_line.lower()
         habit_lines.append(habit_line)
@@ -997,7 +1021,7 @@ def append_ready_habit_triggers(notes_path, ready_triggers):
 def create_persistent_desktop_notifications(ready_triggers):
     notification_count = 0
     for item in ready_triggers:
-        habit_text = get_trigger_habit_text(item)
+        habit_text = remove_tts_pause_markers(get_trigger_habit_text(item))
         if not habit_text:
             continue
         subprocess.run(
@@ -1363,7 +1387,7 @@ def get_or_create_text_to_speech_audio(text_to_speech_config, habit_text):
     return audio_path
 
 
-def get_habit_audio_path(text_to_speech_config, item):
+def get_habit_audio_paths(text_to_speech_config, item):
     habit = item["habit"]
     custom_audio_path = get_habit_audio_file_path(habit)
     if custom_audio_path is not None:
@@ -1371,17 +1395,23 @@ def get_habit_audio_path(text_to_speech_config, item):
             raise RuntimeError(
                 f"Custom habit audio file does not exist: {custom_audio_path}"
             )
-        return custom_audio_path
+        return [custom_audio_path]
 
-    habit_text = get_spoken_habit_text(get_trigger_habit_text(item))
-    if not habit_text:
-        return None
+    habit_text_segments = split_tts_text(get_trigger_habit_text(item))
+    spoken_text_segments = [
+        get_spoken_habit_text(text_segment) for text_segment in habit_text_segments
+    ]
+    if not spoken_text_segments or any(not segment for segment in spoken_text_segments):
+        return []
     trigger_text_to_speech_config = get_trigger_text_to_speech_config(
         text_to_speech_config, item
     )
-    return get_or_create_text_to_speech_audio(
-        trigger_text_to_speech_config, habit_text
-    )
+    return [
+        get_or_create_text_to_speech_audio(
+            trigger_text_to_speech_config, spoken_text_segment
+        )
+        for spoken_text_segment in spoken_text_segments
+    ]
 
 
 def play_audio_file(audio_path, playback_speed=1.0):
@@ -1464,11 +1494,11 @@ def speak_ready_habit_triggers(
             )
             break
         try:
-            audio_path = get_habit_audio_path(text_to_speech_config, item)
+            audio_paths = get_habit_audio_paths(text_to_speech_config, item)
         except (RuntimeError, ValueError) as error:
             logger.error(f"Text-to-speech output failed: {error}")
             break
-        if audio_path is None:
+        if not audio_paths:
             logger.warning("Skipping TTS for habit with empty name")
             continue
         if not is_default_audio_output_bluetooth():
@@ -1477,7 +1507,7 @@ def speak_ready_habit_triggers(
             )
             break
         playback_queue.append(
-            (item, audio_path, get_habit_tts_playback_speed(item["habit"]))
+            (item, audio_paths, get_habit_tts_playback_speed(item["habit"]))
         )
 
     if not playback_queue:
@@ -1494,7 +1524,7 @@ def speak_ready_habit_triggers(
         if phone_audio_control_trigger_url and not can_start_audio_habit_batch():
             return []
 
-        for item, audio_path, playback_speed in playback_queue:
+        for item, audio_paths, playback_speed in playback_queue:
             if (
                 phone_audio_control_trigger_url
                 and not is_default_audio_output_bluetooth()
@@ -1503,7 +1533,22 @@ def speak_ready_habit_triggers(
                     "Skipping TTS because the default audio output is not a Bluetooth sink"
                 )
                 break
-            play_audio_file(audio_path, playback_speed)
+            completed_segment_count = 0
+            for segment_index, audio_path in enumerate(audio_paths):
+                if segment_index:
+                    time_module.sleep(
+                        text_to_speech_config[TEXT_TO_SPEECH_PAUSE_SECONDS_FIELD]
+                    )
+                    if not is_default_audio_output_bluetooth():
+                        logger.warning(
+                            "Stopping TTS during a pause because the default audio "
+                            "output is not a Bluetooth sink"
+                        )
+                        break
+                play_audio_file(audio_path, playback_speed)
+                completed_segment_count += 1
+            if completed_segment_count != len(audio_paths):
+                break
             spoken_triggers.append(item)
     except (RuntimeError, ValueError, subprocess.CalledProcessError) as error:
         logger.error(f"Text-to-speech output failed: {error}")

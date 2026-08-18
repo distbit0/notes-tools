@@ -10,6 +10,7 @@
     "voiceName": "en-US-Neural2-D",
     "voiceNamePrefix": "en-US-Neural2-",
     "audioEncoding": "MP3",
+    "pauseSeconds": 5.0,
     "cacheDir": "./.tts_cache"
   }
 }
