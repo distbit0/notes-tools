@@ -857,7 +857,7 @@ def test_phone_audio_is_paused_around_queued_tts_batch(tmp_path, monkeypatch):
     ]
     assert event_log == [
         "phone:pause",
-        "sleep:10",
+        "sleep:2",
         f"play:{queued_habits[0]['id']}.mp3:1x",
         f"play:{queued_habits[1]['id']}.mp3:1x",
         "sleep:10",

@@ -87,7 +87,8 @@ GOOGLE_CLOUD_TEXT_TO_SPEECH_FIELDS = (
     "audioEncoding",
 )
 PHONE_AUDIO_CONTROL_STATES = {"pause", "play"}
-PHONE_AUDIO_CONTROL_DELAY_SECONDS = 10
+PHONE_AUDIO_PAUSE_SETTLE_DELAY_SECONDS = 2
+PHONE_AUDIO_RESUME_DELAY_SECONDS = 10
 AUDIO_PLAYBACK_LEAD_IN_MILLISECONDS = 750
 BLUETOOTH_AUDIO_TRANSPORT_BUSY_STATES = {"active", "broadcasting", "pending"}
 ACTIVE_HABIT_FIELD_ORDER = (
@@ -1488,7 +1489,7 @@ def speak_ready_habit_triggers(
         if phone_audio_control_trigger_url:
             send_phone_audio_control(phone_audio_control_trigger_url, "pause")
             phone_audio_was_paused = True
-            time_module.sleep(PHONE_AUDIO_CONTROL_DELAY_SECONDS)
+            time_module.sleep(PHONE_AUDIO_PAUSE_SETTLE_DELAY_SECONDS)
 
         if phone_audio_control_trigger_url and not can_start_audio_habit_batch():
             return []
@@ -1508,7 +1509,7 @@ def speak_ready_habit_triggers(
         logger.error(f"Text-to-speech output failed: {error}")
     finally:
         if phone_audio_was_paused:
-            time_module.sleep(PHONE_AUDIO_CONTROL_DELAY_SECONDS)
+            time_module.sleep(PHONE_AUDIO_RESUME_DELAY_SECONDS)
             try:
                 send_phone_audio_control(phone_audio_control_trigger_url, "play")
             except RuntimeError as error:
