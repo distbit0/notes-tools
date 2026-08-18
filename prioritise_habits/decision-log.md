@@ -11,6 +11,7 @@
 - `writeToMd`, desktop notification, and text-to-speech are independent outputs. Completion remains based on all configured daily triggers, not one particular channel.
 - Dynamic source-backed habit text and a randomly selected TTS voice are materialized once per trigger and persisted in the ignored daily schedule. All output channels and delivery retries therefore use the same text and voice, while the next trigger gets fresh source sampling, LLM variation, and voice selection.
 - Dynamic source sampling uses a random contiguous window rather than shuffled fragments. This keeps local context and source order while allowing every line inside oversized sections to be selected. Generated length remains a prompt-level judgment rather than a post-generation rejection condition.
+- Dynamic transformations must represent every supplied source item. Completeness outranks target length and prose quality; the model may combine genuine repetition but must not omit, soften, sanitize, or resolve content according to its own political, moral, factual-quality, or stylistic judgment.
 
 ## Audio delivery is gated, not degraded
 
