@@ -996,13 +996,19 @@ def append_ready_habit_triggers(notes_path, ready_triggers):
         with open(notes_path, "r") as notes_file:
             existing_lines = notes_file.readlines()
 
-    existing_line_set = {line.strip() for line in existing_lines if line.strip()}
+    existing_line_set = {
+        f"- {line.strip().removeprefix('- ').strip()}"
+        for line in existing_lines
+        if line.strip()
+    }
     habit_lines = []
     for item in ready_triggers:
         habit_line = remove_tts_pause_markers(get_trigger_habit_text(item))
         if HABIT_RENDERED_TEXT_FIELD not in item["trigger"]:
             habit_line = habit_line.lower()
-        habit_lines.append(habit_line)
+        habit_line = habit_line.strip().removeprefix("- ").strip()
+        if habit_line:
+            habit_lines.append(f"- {habit_line}")
     new_habit_lines = [
         line for line in habit_lines if line and line not in existing_line_set
     ]

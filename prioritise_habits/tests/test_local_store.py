@@ -1119,6 +1119,31 @@ def test_deleted_markdown_line_is_not_reappended_after_delivery(tmp_path):
     assert ready_trigger["trigger"]["triggered"] is False
 
 
+def test_markdown_habits_are_appended_as_bullets_without_duplicate_prefixes(tmp_path):
+    notes_path = tmp_path / "inbox-index.md"
+    notes_path.write_text(f"- {REPLY_HABIT_TEXT}\n")
+    ready_triggers = [
+        {
+            "habit": {"id": "habit-1", "name": REPLY_HABIT_NAME},
+            "trigger": {"time": "2026-06-12T06:30:00+07:00"},
+        },
+        {
+            "habit": {"id": "habit-2", "name": f"- {FOLLOW_UP_HABIT_NAME}"},
+            "trigger": {"time": "2026-06-12T07:30:00+07:00"},
+        },
+    ]
+
+    appended_count = append_ready_habit_triggers(notes_path, ready_triggers)
+
+    assert appended_count == 1
+    assert notes_path.read_text().splitlines() == [
+        f"- {REPLY_HABIT_TEXT}",
+        "",
+        "",
+        f"- {FOLLOW_UP_HABIT_NAME.lower().removeprefix('- ')}",
+    ]
+
+
 def test_run_lock_skips_second_process(tmp_path):
     lock_path = tmp_path / "habit.lock"
 
