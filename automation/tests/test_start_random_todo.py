@@ -11,6 +11,7 @@ from automation.start_random_todo import (
     DEFAULT_INBOX,
     TODO_SECTION_MARKER,
     Herdr,
+    HerdrError,
     add_session_annotation,
     find_live_session_panes,
     live_session_panes,
@@ -132,3 +133,40 @@ def test_live_resumed_codex_process_is_detected() -> None:
                 assert pane in find_live_session_panes(herdr, snapshot, session_id)
                 return
     pytest.skip("Herdr has no live resumed Codex process")
+
+
+def test_live_session_detection_refreshes_a_boot_restore_snapshot() -> None:
+    class BootRestoringHerdr:
+        def __init__(self) -> None:
+            self.snapshot_calls = 0
+
+        def run_json(self, arguments: list[str]) -> dict:
+            assert arguments == ["pane", "process-info", "--pane", "wZ:p24"]
+            raise HerdrError(
+                "herdr pane process-info failed: pane not found",
+                code="pane_not_found",
+            )
+
+        def snapshot(self) -> dict:
+            self.snapshot_calls += 1
+            return {"panes": []}
+
+    snapshot = {
+        "panes": [
+            {
+                "pane_id": "wZ:p24",
+                "tab_id": "wZ:t1Y",
+                "agent": "codex",
+                "agent_session": None,
+            }
+        ]
+    }
+
+    herdr = BootRestoringHerdr()
+
+    assert find_live_session_panes(
+        herdr,
+        snapshot,
+        "019ff646-0263-7c92-a233-a49a4be8c003",
+    ) == []
+    assert herdr.snapshot_calls == 1

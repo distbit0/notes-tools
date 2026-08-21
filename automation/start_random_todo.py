@@ -207,8 +207,9 @@ def live_session_panes(snapshot: dict, session_id: str) -> list[dict]:
         for pane in panes
         if isinstance(pane, dict)
         and pane.get("agent") == "codex"
-        and pane.get("agent_session", {}).get("kind") == "id"
-        and pane.get("agent_session", {}).get("value") == session_id
+        and isinstance(pane.get("agent_session"), dict)
+        and pane["agent_session"].get("kind") == "id"
+        and pane["agent_session"].get("value") == session_id
     ]
 
 
@@ -243,22 +244,39 @@ def find_live_session_panes(
     snapshot: dict,
     session_id: str,
 ) -> list[dict]:
-    matches = live_session_panes(snapshot, session_id)
-    panes = snapshot.get("panes")
-    if not isinstance(panes, list):
-        raise HerdrError("Herdr snapshot omitted panes")
-    matched_pane_ids = {str(pane["pane_id"]) for pane in matches}
-    for pane in panes:
-        if (
-            not isinstance(pane, dict)
-            or pane.get("agent") != "codex"
-            or str(pane.get("pane_id")) in matched_pane_ids
-        ):
-            continue
-        pane_id = str(pane["pane_id"])
-        if pane_resumes_session(herdr, pane_id, session_id):
-            matches.append(pane)
-    return matches
+    readiness_deadline = time.monotonic() + 5
+    current_snapshot = snapshot
+    while True:
+        matches = live_session_panes(current_snapshot, session_id)
+        panes = current_snapshot.get("panes")
+        if not isinstance(panes, list):
+            raise HerdrError("Herdr snapshot omitted panes")
+        matched_pane_ids = {str(pane["pane_id"]) for pane in matches}
+        snapshot_was_stale = False
+        for pane in panes:
+            if (
+                not isinstance(pane, dict)
+                or pane.get("agent") != "codex"
+                or str(pane.get("pane_id")) in matched_pane_ids
+            ):
+                continue
+            pane_id = str(pane["pane_id"])
+            try:
+                resumes_session = pane_resumes_session(herdr, pane_id, session_id)
+            except HerdrError as exc:
+                if (
+                    exc.code != "pane_not_found"
+                    or time.monotonic() >= readiness_deadline
+                ):
+                    raise
+                time.sleep(0.1)
+                current_snapshot = herdr.snapshot()
+                snapshot_was_stale = True
+                break
+            if resumes_session:
+                matches.append(pane)
+        if not snapshot_was_stale:
+            return matches
 
 
 def notes_workspace(snapshot: dict) -> dict | None:
