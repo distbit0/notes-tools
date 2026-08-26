@@ -341,6 +341,13 @@ def create_todo_tab(herdr: Herdr, snapshot: dict, task: str) -> tuple[str, str]:
     return str(tab["tab_id"]), str(root_pane["pane_id"])
 
 
+def get_started_agent(herdr: Herdr, agent_name: str) -> dict:
+    agent = result_object(herdr.run_json(["agent", "get", agent_name])).get("agent")
+    if not isinstance(agent, dict):
+        raise HerdrError("Herdr did not return the started Codex agent")
+    return agent
+
+
 def start_codex(
     herdr: Herdr,
     pane_id: str,
@@ -373,10 +380,14 @@ def start_codex(
             time.sleep(0.1)
 
     if initial_prompt:
-        herdr.run_json(["agent", "prompt", pane_id, initial_prompt])
+        herdr.run_json(["agent", "prompt", agent_name, initial_prompt])
 
     if session_id:
-        if not pane_resumes_session(herdr, pane_id, session_id):
+        agent = get_started_agent(herdr, agent_name)
+        active_pane_id = str(agent.get("pane_id") or "")
+        if not active_pane_id:
+            raise HerdrError("the started Codex agent omitted its pane id")
+        if not pane_resumes_session(herdr, active_pane_id, session_id):
             raise HerdrError(
                 f"the started Codex process did not resume session {session_id}"
             )
@@ -384,9 +395,7 @@ def start_codex(
 
     session_ready_deadline = time.monotonic() + 30
     while True:
-        agent = result_object(herdr.run_json(["agent", "get", pane_id])).get("agent")
-        if not isinstance(agent, dict):
-            raise HerdrError("Herdr did not return the started Codex agent")
+        agent = get_started_agent(herdr, agent_name)
         agent_session = agent.get("agent_session")
         if isinstance(agent_session, dict) and agent_session.get("kind") == "id":
             break

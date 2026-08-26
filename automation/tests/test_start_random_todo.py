@@ -19,6 +19,7 @@ from automation.start_random_todo import (
     notes_workspace,
     parse_inbox_todos,
     process_resumes_session,
+    start_codex,
 )
 
 
@@ -170,3 +171,60 @@ def test_live_session_detection_refreshes_a_boot_restore_snapshot() -> None:
         "019ff646-0263-7c92-a233-a49a4be8c003",
     ) == []
     assert herdr.snapshot_calls == 1
+
+
+def test_started_agent_uses_stable_name_after_pane_identity_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_id = "019ff646-0263-7c92-a233-a49a4be8c003"
+    agent_name = "todo-3b4ab69441"
+
+    class CapturedHerdr:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def run_json(self, arguments: list[str]) -> dict:
+            self.calls.append(arguments)
+            if arguments[:2] == ["agent", "start"]:
+                return {"result": {}}
+            if arguments == ["agent", "get", agent_name]:
+                # Captured from the live resumed agent on 2026-08-26.
+                return {
+                    "result": {
+                        "agent": {
+                            "agent": "codex",
+                            "name": agent_name,
+                            "pane_id": "wZ:p2N",
+                            "tab_id": "wZ:t2F",
+                            "interactive_ready": True,
+                        }
+                    }
+                }
+            if arguments == ["pane", "process-info", "--pane", "wZ:p2N"]:
+                # Selected fields from the same live Herdr response.
+                return {
+                    "result": {
+                        "process_info": {
+                            "foreground_processes": [
+                                {
+                                    "argv": [
+                                        "codex",
+                                        "resume",
+                                        session_id,
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                }
+            raise AssertionError(f"unexpected Herdr call: {arguments}")
+
+    monkeypatch.setattr(
+        "automation.start_random_todo.uuid.uuid4",
+        lambda: type("CapturedUuid", (), {"hex": "3b4ab694410000000000000000000000"})(),
+    )
+    herdr = CapturedHerdr()
+
+    assert start_codex(herdr, "wZ:p2M", session_id) == session_id
+    assert ["agent", "get", agent_name] in herdr.calls
+    assert ["agent", "get", "wZ:p2M"] not in herdr.calls
