@@ -173,13 +173,15 @@ def test_goal_advancement_is_automatically_scheduled() -> None:
     ) in cadence_job
 
 
-def test_interactive_todo_kickoff_runs_three_times_daily_as_cli() -> None:
+def test_interactive_todo_kickoff_is_configured_but_disabled() -> None:
     scheduler_text = SCHEDULER.read_text(encoding="utf-8")
     scheduled_jobs = scheduler_text[
         scheduler_text.index("scheduled_codex_jobs()"):
         scheduler_text.index("\nscheduled_message_reply_jobs()")
     ]
 
+    assert "readonly SCHEDULED_TODO_KICKOFF_ENABLED=false" in scheduler_text
+    assert 'if [[ "$SCHEDULED_TODO_KICKOFF_ENABLED" == true ]]; then' in scheduled_jobs
     assert (
         'scheduled_todo_kickoff_job "scheduled-todo-kickoff" '
         '"execute-todo" "cli" "11:00 16:00 21:00"'

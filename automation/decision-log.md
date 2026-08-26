@@ -1,5 +1,11 @@
 # Decision Log
 
+## Interactive todo kickoff scheduling
+
+- Date: 2026-08-26
+- Decision: disable automatic `scheduled-todo-kickoff` runs while retaining the kickoff implementation and its 11:00, 16:00, and 21:00 configuration for possible re-enablement or manual use.
+- Rationale: stop automatically opening todo sessions in Herdr without disabling the shared slot timers, which continue to run unrelated scheduled Codex jobs.
+
 ## Scheduled contradiction processing
 
 - Date: 2026-07-16
