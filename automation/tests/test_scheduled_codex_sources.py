@@ -4,6 +4,7 @@ import fcntl
 from math import lcm
 import os
 import re
+import shlex
 from pathlib import Path
 import subprocess
 import time
@@ -147,6 +148,51 @@ def test_infolio_selection_is_passed_to_codex_after_cadence_check() -> None:
     assert "if (( prompt_builder_status == 3 )); then" in scheduled_job
     assert 'log_skipped_job "$job_name" "$extra_prompt"' in scheduled_job
     assert "Selection JSON:" in scheduler_text
+
+
+def test_infolio_selector_failure_stops_before_codex_prompt_creation(
+    tmp_path: Path,
+) -> None:
+    scheduler_text = SCHEDULER.read_text(encoding="utf-8")
+    prompt_builder = scheduler_text[
+        scheduler_text.index("prepare_infolio_relevance_prompt()"):
+        scheduler_text.index("\nscheduled_codex_job_every_n_days()")
+    ]
+    executable_directory = tmp_path / "bin"
+    executable_directory.mkdir()
+    failing_selector = executable_directory / "uv"
+    failing_selector.write_text(
+        "#!/usr/bin/env bash\nexit 41\n",
+        encoding="utf-8",
+    )
+    failing_selector.chmod(0o700)
+    result = subprocess.run(
+        [
+            "/usr/bin/bash",
+            "-c",
+            f"""
+set -u
+TOOLS_DIR={shlex.quote(str(REPO_ROOT))}
+NOTES_DIR={shlex.quote(str(REPO_ROOT))}
+{prompt_builder}
+if prompt="$(prepare_infolio_relevance_prompt)"; then
+  printf 'unexpected prompt: %s\\n' "$prompt"
+  exit 0
+else
+  exit "$?"
+fi
+""",
+        ],
+        env=os.environ | {"PATH": f"{executable_directory}:{os.environ['PATH']}"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 41
+    assert result.stdout == ""
+    assert "Infolio article selection failed with status 41." in result.stderr
+    assert "Selection JSON:" not in result.stderr
 
 
 def test_goal_advancement_is_automatically_scheduled() -> None:

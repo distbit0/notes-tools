@@ -772,17 +772,39 @@ scheduled_error_log_job() {
 
 prepare_infolio_relevance_prompt() {
   local selection_json
+  local selector_status
   local skip_reason
 
-  selection_json="$(
-    cd "$TOOLS_DIR"
-    uv run --env-file .env python notes/select_infolio_relevance_articles.py \
-      --feedback-file "$NOTES_DIR/.agents/skills/scheduled-infolio-relevance/feedback.md"
-  )"
-  jq -e '
-    .articles | type == "array"
-    and all(.[]; (.article_id | type == "string") and (.lineate_url | type == "string"))
-  ' <<< "$selection_json" >/dev/null
+  if selection_json="$(
+      cd "$TOOLS_DIR"
+      uv run --env-file .env python notes/select_infolio_relevance_articles.py \
+        --feedback-file "$NOTES_DIR/.agents/skills/scheduled-infolio-relevance/feedback.md"
+    )"; then
+    selector_status=0
+  else
+    selector_status=$?
+  fi
+  if (( selector_status != 0 )); then
+    echo "Infolio article selection failed with status ${selector_status}." >&2
+    return "$selector_status"
+  fi
+  if ! jq -e '
+    type == "object"
+    and (.articles | type == "array")
+    and all(.articles[];
+      (.article_id | type == "string" and length > 0)
+      and (.title | type == "string" and length > 0)
+      and (.infolio_rank | type == "number" and . >= 1 and floor == .)
+      and (.lineate_url | type == "string" and length > 0)
+    )
+    and (
+      (.articles | length) > 0
+      or (.skip_reason | type == "string" and length > 0)
+    )
+  ' <<< "$selection_json" >/dev/null; then
+    echo "Infolio article selection returned an invalid payload." >&2
+    return 2
+  fi
   skip_reason="$(jq -r '.skip_reason // empty' <<< "$selection_json")"
   if [[ -n "$skip_reason" ]]; then
     printf '%s\n' "$skip_reason"
