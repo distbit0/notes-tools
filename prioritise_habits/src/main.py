@@ -73,6 +73,7 @@ HABIT_RANDOM_TTS_VOICE_FIELD = "randomTtsVoice"
 HABIT_TTS_PLAYBACK_SPEED_FIELD = "ttsPlaybackSpeed"
 TRIGGER_TTS_VOICE_ID_FIELD = "ttsVoiceId"
 TEXT_TO_SPEECH_PAUSE_SECONDS_FIELD = "pauseSeconds"
+TEXT_TO_SPEECH_PLAYBACK_SPEED_FIELD = "playbackSpeed"
 ELEVENLABS_API_KEY_ENV = "ELEVENLABS_API_KEY"
 PHONE_AUDIO_CONTROL_TRIGGER_URL_ENV = "PHONE_AUDIO_CONTROL_TRIGGER_URL"
 DEFAULT_DUE_OUTPUTS = {
@@ -87,6 +88,7 @@ DEFAULT_TEXT_TO_SPEECH_CONFIG = {
     "outputFormat": "mp3_44100_128",
     "cacheDir": "./.tts_cache",
     TEXT_TO_SPEECH_PAUSE_SECONDS_FIELD: 5.0,
+    TEXT_TO_SPEECH_PLAYBACK_SPEED_FIELD: 1.8,
 }
 GOOGLE_CLOUD_TEXT_TO_SPEECH_FIELDS = (
     "quotaProject",
@@ -231,6 +233,20 @@ def get_text_to_speech_config(config):
         raise ValueError("textToSpeech.pauseSeconds must be a positive number")
     text_to_speech_config[TEXT_TO_SPEECH_PAUSE_SECONDS_FIELD] = float(
         pause_seconds
+    )
+
+    playback_speed = text_to_speech_config.get(
+        TEXT_TO_SPEECH_PLAYBACK_SPEED_FIELD,
+        DEFAULT_TEXT_TO_SPEECH_CONFIG[TEXT_TO_SPEECH_PLAYBACK_SPEED_FIELD],
+    )
+    if (
+        isinstance(playback_speed, bool)
+        or not isinstance(playback_speed, (int, float))
+        or playback_speed <= 0
+    ):
+        raise ValueError("textToSpeech.playbackSpeed must be a positive number")
+    text_to_speech_config[TEXT_TO_SPEECH_PLAYBACK_SPEED_FIELD] = float(
+        playback_speed
     )
 
     for field_name in required_fields:
@@ -752,8 +768,13 @@ def get_habit_random_tts_voice(habit):
     return random_tts_voice
 
 
-def get_habit_tts_playback_speed(habit):
-    playback_speed = habit.get(HABIT_TTS_PLAYBACK_SPEED_FIELD, 1.0)
+def get_habit_tts_playback_speed(
+    habit,
+    default_playback_speed=DEFAULT_TEXT_TO_SPEECH_CONFIG[
+        TEXT_TO_SPEECH_PLAYBACK_SPEED_FIELD
+    ],
+):
+    playback_speed = habit.get(HABIT_TTS_PLAYBACK_SPEED_FIELD, default_playback_speed)
     if (
         isinstance(playback_speed, bool)
         or not isinstance(playback_speed, (int, float))
@@ -1492,6 +1513,10 @@ def speak_ready_habit_triggers(
     if not ready_triggers or not can_start_audio_habit_batch():
         return []
 
+    default_playback_speed = text_to_speech_config.get(
+        TEXT_TO_SPEECH_PLAYBACK_SPEED_FIELD,
+        DEFAULT_TEXT_TO_SPEECH_CONFIG[TEXT_TO_SPEECH_PLAYBACK_SPEED_FIELD],
+    )
     playback_queue = []
     for item in ready_triggers:
         if not is_default_audio_output_bluetooth():
@@ -1513,7 +1538,13 @@ def speak_ready_habit_triggers(
             )
             break
         playback_queue.append(
-            (item, audio_paths, get_habit_tts_playback_speed(item["habit"]))
+            (
+                item,
+                audio_paths,
+                get_habit_tts_playback_speed(
+                    item["habit"], default_playback_speed
+                ),
+            )
         )
 
     if not playback_queue:

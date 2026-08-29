@@ -628,6 +628,7 @@ def test_google_cloud_text_to_speech_config_is_validated(tmp_path):
     assert configured["audioEncoding"] == "MP3"
     assert configured["cacheDir"] == str(tmp_path)
     assert configured["pauseSeconds"] == 5.0
+    assert configured["playbackSpeed"] == 1.8
 
 
 def test_google_cloud_text_to_speech_config_requires_quota_project():
@@ -644,6 +645,14 @@ def test_google_cloud_text_to_speech_config_requires_quota_project():
                 }
             }
         )
+
+
+def test_text_to_speech_config_rejects_invalid_playback_speed():
+    config = json.loads((PROJECT_ROOT / "config.json").read_text(encoding="utf-8"))
+    config["textToSpeech"]["playbackSpeed"] = 0
+
+    with pytest.raises(ValueError, match="textToSpeech.playbackSpeed"):
+        get_text_to_speech_config(config)
 
 
 def test_audio_playback_adds_silence_lead_in(tmp_path, monkeypatch):
@@ -912,8 +921,8 @@ def test_phone_audio_is_paused_around_queued_tts_batch(tmp_path, monkeypatch):
     assert event_log == [
         "phone:pause",
         "sleep:2",
-        f"play:{queued_habits[0]['id']}.mp3:1x",
-        f"play:{queued_habits[1]['id']}.mp3:1x",
+        f"play:{queued_habits[0]['id']}.mp3:1.8x",
+        f"play:{queued_habits[1]['id']}.mp3:1.8x",
         "sleep:10",
         "phone:play",
     ]

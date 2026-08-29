@@ -32,6 +32,7 @@ Edit [`config.json`](config.json):
     "voiceName": "en-US-Neural2-D",
     "voiceNamePrefix": "en-US-Neural2-",
     "audioEncoding": "MP3",
+    "playbackSpeed": 1.8,
     "pauseSeconds": 5.0,
     "cacheDir": "./.tts_cache"
   }
@@ -41,7 +42,7 @@ Edit [`config.json`](config.json):
 - `lookBackDays`: number of days used when calculating completion rate.
 - `habitsStoreFile`: path to the archived habit and check-in store.
 - `activeHabitsFile`: path to the editable non-archived habits file.
-- `textToSpeech`: Google Cloud or ElevenLabs voice settings, the MP3 cache directory, and `pauseSeconds`, which controls the silence inserted for each `[[PAUSE]]` marker. With Google Cloud, `voiceName` is the fixed default and `voiceNamePrefix` selects the catalog pool used by habits with random voice enabled. The configured account must have access to `quotaProject`, the Cloud Text-to-Speech API must be enabled there, and `gcloud auth print-access-token` must work non-interactively. The script sends `quotaProject` as the quota/billing project and never stores the access token.
+- `textToSpeech`: Google Cloud or ElevenLabs voice settings, the MP3 cache directory, `playbackSpeed`, and `pauseSeconds`, which controls the silence inserted for each `[[PAUSE]]` marker. `playbackSpeed` is the default for every TTS habit. With Google Cloud, `voiceName` is the fixed default and `voiceNamePrefix` selects the catalog pool used by habits with random voice enabled. The configured account must have access to `quotaProject`, the Cloud Text-to-Speech API must be enabled there, and `gcloud auth print-access-token` must work non-interactively. The script sends `quotaProject` as the quota/billing project and never stores the access token.
 
 For ElevenLabs, set `provider` to `elevenlabs` and configure `voiceId`, optional `voiceIds`, `modelId`, and `outputFormat`. Set `ELEVENLABS_API_KEY` in `.env`; the key is not logged or committed.
 
@@ -125,10 +126,11 @@ Notes:
 - `textSourceFile` optionally replaces the hardcoded `name` as the delivered habit text. `name` remains the habit's short identity and prioritization label. Relative source paths are resolved from the project root.
 - A habit with `textSourceFile` must also set a positive integer `maxSourceWordCount` and a non-empty `textTransformPrompt`.
 - If the source exceeds `maxSourceWordCount`, the script chooses a random content line and expands a contiguous window around it with fresh operating-system randomness while keeping the excerpt strictly below the cap. Source order and local context remain intact, and content inside sections larger than the cap remains eligible. A single source line at or above the cap fails explicitly.
+- Leading YAML frontmatter is removed before source length and sampling are calculated. An opening frontmatter delimiter without a closing delimiter fails explicitly.
 - Selected source text is transformed by non-interactive `codex exec` using `gpt-5.6-terra` with high reasoning. The generated text is stored in the ignored daily schedule and reused across output channels and retries for that trigger.
 - In generated or ordinary habit text, `[[PAUSE]]` splits TTS into separately cached audio segments and inserts `textToSpeech.pauseSeconds` of silence between them. The marker is removed from Markdown and desktop-notification output.
 - `randomTtsVoice` is optional and defaults to `false`. When true with Google Cloud, the script lists voices for `languageCode`, filters them by `voiceNamePrefix`, and randomly chooses one. With ElevenLabs, it chooses from `textToSpeech.voiceIds`, or from the account's voices when no pool is configured; account discovery requires the API key's `voices_read` permission. The choice is persisted for retries and the flag cannot be combined with `audioFile`.
-- `ttsPlaybackSpeed` is optional and defaults to `1.0`. Set it to `2.0` to play that habit's generated or custom audio at twice its original speed while retaining the Bluetooth lead-in.
+- `ttsPlaybackSpeed` is optional and overrides `textToSpeech.playbackSpeed` for that habit. It applies to generated and custom audio while retaining the Bluetooth lead-in.
 - `audioFile` is optional. When present with `textToSpeech` enabled, it must point to an `.mp3` file and is played instead of calling the configured TTS provider. Relative paths are resolved from the repo root.
 
 ## Trigger Scheduling

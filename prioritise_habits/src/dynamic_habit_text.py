@@ -76,8 +76,24 @@ def count_words(text):
     return len(re.findall(r"\S+", text))
 
 
+def frontmatter_body(source_text):
+    source_lines = source_text.splitlines()
+    if not source_lines or source_lines[0].strip() != "---":
+        return source_text
+
+    for line_index, line in enumerate(source_lines[1:], start=1):
+        if line.strip() != "---":
+            continue
+        body = "\n".join(source_lines[line_index + 1 :])
+        if source_text.endswith("\n"):
+            body += "\n"
+        return body
+
+    raise ValueError("Habit source frontmatter has no closing delimiter")
+
+
 def select_habit_source_text(source_text, max_word_count, random_generator=None):
-    stripped_source_text = source_text.strip()
+    stripped_source_text = frontmatter_body(source_text).strip()
     if not stripped_source_text:
         raise ValueError("Habit text source file is empty")
     if count_words(stripped_source_text) <= max_word_count:
