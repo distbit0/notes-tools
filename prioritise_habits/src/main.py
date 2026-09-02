@@ -88,7 +88,7 @@ DEFAULT_TEXT_TO_SPEECH_CONFIG = {
     "outputFormat": "mp3_44100_128",
     "cacheDir": "./.tts_cache",
     TEXT_TO_SPEECH_PAUSE_SECONDS_FIELD: 5.0,
-    TEXT_TO_SPEECH_PLAYBACK_SPEED_FIELD: 1.8,
+    TEXT_TO_SPEECH_PLAYBACK_SPEED_FIELD: 2.16,
 }
 GOOGLE_CLOUD_TEXT_TO_SPEECH_FIELDS = (
     "quotaProject",
@@ -1537,15 +1537,13 @@ def speak_ready_habit_triggers(
                 "Skipping TTS playback because the default audio output changed"
             )
             break
-        playback_queue.append(
-            (
-                item,
-                audio_paths,
-                get_habit_tts_playback_speed(
-                    item["habit"], default_playback_speed
-                ),
-            )
+        habit = item["habit"]
+        playback_speed = (
+            1.0
+            if habit.get(HABIT_AUDIO_FILE_FIELD) is not None
+            else get_habit_tts_playback_speed(habit, default_playback_speed)
         )
+        playback_queue.append((item, audio_paths, playback_speed))
 
     if not playback_queue:
         return []

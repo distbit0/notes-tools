@@ -17,6 +17,7 @@
 ## Audio delivery is gated, not degraded
 
 - Text-to-speech and custom audio remain pending until the default sink is Bluetooth. A missing custom audio file is an error and never falls back to generated speech or laptop speakers.
+- Playback-speed configuration applies only to generated TTS. Custom MP3 habit audio always plays at its native 1x speed.
 - Playback is sequential under a process lock because the every-minute scheduler can otherwise overlap long batches. Phone audio is paused once around the whole batch and resumed once afterward.
 - Project audio-control configuration comes from the ignored `.env`, and generated speech is cached locally to avoid repeated API spend.
 - `[[PAUSE]]` is a provider-independent TTS control marker. Each non-empty segment is synthesized and cached independently, then playback inserts the globally configured pause without speaking or displaying the marker.

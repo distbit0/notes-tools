@@ -32,7 +32,7 @@ Edit [`config.json`](config.json):
     "voiceName": "en-US-Neural2-D",
     "voiceNamePrefix": "en-US-Neural2-",
     "audioEncoding": "MP3",
-    "playbackSpeed": 1.8,
+    "playbackSpeed": 2.16,
     "pauseSeconds": 5.0,
     "cacheDir": "./.tts_cache"
   }
@@ -130,7 +130,7 @@ Notes:
 - Selected source text is transformed by non-interactive `codex exec` using `gpt-5.6-terra` with high reasoning. The generated text is stored in the ignored daily schedule and reused across output channels and retries for that trigger.
 - In generated or ordinary habit text, `[[PAUSE]]` splits TTS into separately cached audio segments and inserts `textToSpeech.pauseSeconds` of silence between them. The marker is removed from Markdown and desktop-notification output.
 - `randomTtsVoice` is optional and defaults to `false`. When true with Google Cloud, the script lists voices for `languageCode`, filters them by `voiceNamePrefix`, and randomly chooses one. With ElevenLabs, it chooses from `textToSpeech.voiceIds`, or from the account's voices when no pool is configured; account discovery requires the API key's `voices_read` permission. The choice is persisted for retries and the flag cannot be combined with `audioFile`.
-- `ttsPlaybackSpeed` is optional and overrides `textToSpeech.playbackSpeed` for that habit. It applies to generated and custom audio while retaining the Bluetooth lead-in.
+- `ttsPlaybackSpeed` is optional and overrides `textToSpeech.playbackSpeed` for generated TTS on that habit. Custom `audioFile` MP3s always play at 1x. Both paths retain the Bluetooth lead-in.
 - `audioFile` is optional. When present with `textToSpeech` enabled, it must point to an `.mp3` file and is played instead of calling the configured TTS provider. Relative paths are resolved from the repo root.
 
 ## Trigger Scheduling

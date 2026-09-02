@@ -628,7 +628,7 @@ def test_google_cloud_text_to_speech_config_is_validated(tmp_path):
     assert configured["audioEncoding"] == "MP3"
     assert configured["cacheDir"] == str(tmp_path)
     assert configured["pauseSeconds"] == 5.0
-    assert configured["playbackSpeed"] == 1.8
+    assert configured["playbackSpeed"] == 2.16
 
 
 def test_google_cloud_text_to_speech_config_requires_quota_project():
@@ -713,6 +713,7 @@ def test_custom_habit_audio_file_plays_without_generating_tts(monkeypatch):
                 "id": CUSTOM_AUDIO_HABIT_ID,
                 "name": CUSTOM_AUDIO_HABIT_NAME,
                 "audioFile": audio_file,
+                "ttsPlaybackSpeed": 2.0,
                 "dueOutputs": {"textToSpeech": True},
             },
             "trigger": {"time": "2026-06-13T06:30:00+07:00"},
@@ -732,7 +733,9 @@ def test_custom_habit_audio_file_plays_without_generating_tts(monkeypatch):
     )
     monkeypatch.setattr(
         "src.main.play_audio_file",
-        lambda audio_path, playback_speed: played_paths.append(audio_path),
+        lambda audio_path, playback_speed: played_paths.append(
+            (audio_path, playback_speed)
+        ),
     )
 
     spoken_triggers = speak_ready_habit_triggers({}, ready_triggers)
@@ -740,7 +743,7 @@ def test_custom_habit_audio_file_plays_without_generating_tts(monkeypatch):
     assert [item["habit"]["id"] for item in spoken_triggers] == [
         CUSTOM_AUDIO_HABIT_ID
     ]
-    assert played_paths == [custom_audio_path.resolve()]
+    assert played_paths == [(custom_audio_path.resolve(), 1.0)]
 
 
 def test_habit_audio_file_rejects_non_mp3_path():
@@ -921,8 +924,8 @@ def test_phone_audio_is_paused_around_queued_tts_batch(tmp_path, monkeypatch):
     assert event_log == [
         "phone:pause",
         "sleep:2",
-        f"play:{queued_habits[0]['id']}.mp3:1.8x",
-        f"play:{queued_habits[1]['id']}.mp3:1.8x",
+        f"play:{queued_habits[0]['id']}.mp3:2.16x",
+        f"play:{queued_habits[1]['id']}.mp3:2.16x",
         "sleep:10",
         "phone:play",
     ]
