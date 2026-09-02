@@ -1,5 +1,6 @@
 import fcntl
 from pathlib import Path
+import shutil
 import sys
 import threading
 
@@ -15,7 +16,13 @@ import notesSync  # noqa: E402
 import teleportWikilinks  # noqa: E402
 
 
-NOTES_FOLDER = Path(notesSync.getConfig()["notesFolder"])
+CAPTURED_NOTES_FIXTURE = REPO_ROOT / "tests/fixtures/notes-snapshot"
+
+
+def copy_captured_notes(tmp_path: Path) -> Path:
+    notes_folder = tmp_path / "notes"
+    shutil.copytree(CAPTURED_NOTES_FIXTURE, notes_folder)
+    return notes_folder
 
 
 def test_strip_share_token_removes_only_marker_token() -> None:
@@ -98,25 +105,34 @@ def test_get_all_notes_linked_from_index_notes_strips_linked_note_share_token(
     assert linked_notes["linked-note.md"]["text"] == "Linked content"
 
 
-def test_real_notes_gist_scan_ignores_subdirectories() -> None:
-    index_notes = notesSync.getAllIndexNotes(str(NOTES_FOLDER))
+def test_gist_scan_ignores_subdirectories(tmp_path: Path) -> None:
+    notes_folder = copy_captured_notes(tmp_path)
+    nested_folder = notes_folder / "nested"
+    nested_folder.mkdir()
+    shutil.copy2(
+        notes_folder / "root-index.md",
+        nested_folder / "nested-index.md",
+    )
 
-    assert index_notes
+    index_notes = notesSync.getAllIndexNotes(str(notes_folder))
+
+    assert set(index_notes) == {"root-index.md"}
     assert all(
-        Path(info["file_path"]).parent == NOTES_FOLDER
+        Path(info["file_path"]).parent == notes_folder
         for info in index_notes.values()
     )
 
 
-def test_real_notes_gist_scan_excludes_blocked_notes() -> None:
-    index_notes = notesSync.getAllIndexNotes(str(NOTES_FOLDER))
+def test_gist_scan_excludes_blocked_notes(tmp_path: Path) -> None:
+    notes_folder = copy_captured_notes(tmp_path)
+    index_notes = notesSync.getAllIndexNotes(str(notes_folder))
     linked_notes = notesSync.getAllNotesLinkedFromIndexNotes(
         index_notes,
-        str(NOTES_FOLDER),
+        str(notes_folder),
     )
     blocked_note_names = {
         path.name
-        for path in NOTES_FOLDER.glob("*.md")
+        for path in notes_folder.glob("*.md")
         if notesSync.has_block_token(
             path.read_text(encoding="utf-8", errors="ignore")
         )
@@ -130,43 +146,44 @@ def test_blocked_note_cleanup_deletes_real_gist_and_clears_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    blocked_note_path = next(
-        path
-        for path in NOTES_FOLDER.glob("*.md")
-        if notesSync.has_block_token(
-            path.read_text(encoding="utf-8", errors="ignore")
-        )
-    )
-    published_metadata = next(
-        metadata
-        for path in NOTES_FOLDER.glob("*.md")
-        if (metadata := notesSync.load_note(path).metadata).get("gist_url")
-        and "live" in metadata
-    )
-    copied_note_path = tmp_path / blocked_note_path.name
-    copied_note_path.write_bytes(blocked_note_path.read_bytes())
-    copied_note = notesSync.load_note(copied_note_path)
+    notes_folder = copy_captured_notes(tmp_path)
+    blocked_note_path = notes_folder / "polymarket-index.md"
+    published_metadata = notesSync.load_note(
+        notes_folder / "root-index.md"
+    ).metadata
+    copied_note = notesSync.load_note(blocked_note_path)
     copied_note.metadata["gist_url"] = published_metadata["gist_url"]
     copied_note.metadata["live"] = published_metadata["live"]
-    notesSync.frontmatter.dump(copied_note, copied_note_path)
+    notesSync.frontmatter.dump(copied_note, blocked_note_path)
     deleted_gist_urls = []
     monkeypatch.setattr(notesSync, "delete_gist", deleted_gist_urls.append)
 
-    notesSync.delete_blocked_note_gists(str(tmp_path))
-    notesSync.delete_blocked_note_gists(str(tmp_path))
+    notesSync.delete_blocked_note_gists(str(notes_folder))
+    notesSync.delete_blocked_note_gists(str(notes_folder))
 
-    cleaned_metadata = notesSync.load_note(copied_note_path).metadata
+    cleaned_metadata = notesSync.load_note(blocked_note_path).metadata
     assert deleted_gist_urls == [published_metadata["gist_url"]]
     assert "gist_url" not in cleaned_metadata
     assert "live" not in cleaned_metadata
 
 
-def test_real_notes_teleport_lookup_ignores_subdirectories() -> None:
-    markdown_paths = teleportWikilinks.get_all_markdown_files(str(NOTES_FOLDER))
+def test_teleport_lookup_ignores_subdirectories(tmp_path: Path) -> None:
+    notes_folder = copy_captured_notes(tmp_path)
+    nested_folder = notes_folder / ".agents/skills/example"
+    nested_folder.mkdir(parents=True)
+    shutil.copy2(
+        notes_folder / "root-index.md",
+        nested_folder / "SKILL.md",
+    )
 
-    assert markdown_paths
-    assert all(Path(path).parent == NOTES_FOLDER for path in markdown_paths)
-    assert teleportWikilinks.find_file_by_name(str(NOTES_FOLDER), "SKILL.md") is None
+    markdown_paths = teleportWikilinks.get_all_markdown_files(str(notes_folder))
+
+    assert {Path(path).name for path in markdown_paths} == {
+        "polymarket-index.md",
+        "root-index.md",
+    }
+    assert all(Path(path).parent == notes_folder for path in markdown_paths)
+    assert teleportWikilinks.find_file_by_name(str(notes_folder), "SKILL.md") is None
 
 
 def test_notes_repository_lock_skips_existing_writer(tmp_path: Path) -> None:
