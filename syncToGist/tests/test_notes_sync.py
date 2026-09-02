@@ -169,24 +169,64 @@ def test_real_notes_teleport_lookup_ignores_subdirectories() -> None:
     assert teleportWikilinks.find_file_by_name(str(NOTES_FOLDER), "SKILL.md") is None
 
 
-def test_notes_repository_lock_waits_for_existing_writer(tmp_path: Path) -> None:
+def test_notes_repository_lock_skips_existing_writer(tmp_path: Path) -> None:
     notes_folder = tmp_path / "notes"
     git_folder = notes_folder / ".git"
     git_folder.mkdir(parents=True)
     lock_path = git_folder / "git_auto_commit.lock"
-    lock_entered = threading.Event()
+    lock_checked = threading.Event()
+    lock_acquired = None
 
     def acquire_lock() -> None:
-        with notesSync.notes_repository_lock(notes_folder):
-            lock_entered.set()
+        nonlocal lock_acquired
+        with notesSync.try_notes_repository_lock(notes_folder) as acquired:
+            lock_acquired = acquired
+            lock_checked.set()
 
     with lock_path.open("a") as existing_lock:
         fcntl.flock(existing_lock, fcntl.LOCK_EX)
         lock_thread = threading.Thread(target=acquire_lock)
         lock_thread.start()
-        assert not lock_entered.wait(timeout=0.1)
-        fcntl.flock(existing_lock, fcntl.LOCK_UN)
+        assert lock_checked.wait(timeout=1)
+        assert lock_acquired is False
 
-    assert lock_entered.wait(timeout=1)
     lock_thread.join(timeout=1)
     assert not lock_thread.is_alive()
+
+    with notesSync.try_notes_repository_lock(notes_folder) as acquired:
+        assert acquired is True
+
+
+def test_main_skips_processing_when_notes_repository_is_locked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    notes_folder = tmp_path / "notes"
+    git_folder = notes_folder / ".git"
+    git_folder.mkdir(parents=True)
+    lock_path = git_folder / "git_auto_commit.lock"
+    processing_calls = []
+
+    monkeypatch.setattr(
+        notesSync,
+        "getConfig",
+        lambda: {"notesFolder": str(notes_folder)},
+    )
+    monkeypatch.setattr(
+        notesSync,
+        "create_backlinks",
+        lambda directory: processing_calls.append(("backlinks", directory)),
+    )
+    monkeypatch.setattr(
+        notesSync,
+        "process_markdown_files",
+        lambda directory: processing_calls.append(("gists", directory)),
+    )
+
+    with lock_path.open("a") as existing_lock:
+        fcntl.flock(existing_lock, fcntl.LOCK_EX)
+        notesSync.main()
+
+    assert processing_calls == []
+    assert "Skipping Gist sync" in capsys.readouterr().out

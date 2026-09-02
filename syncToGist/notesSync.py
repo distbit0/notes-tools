@@ -16,11 +16,15 @@ BLOCK_TOKEN_PATTERN = re.compile(r"(?<![\w-])#block(?![\w-])")
 
 
 @contextmanager
-def notes_repository_lock(directory):
+def try_notes_repository_lock(directory):
     lock_path = Path(directory) / ".git/git_auto_commit.lock"
     with lock_path.open("a") as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
-        yield
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
 
 
 def note_slug(value):
@@ -289,7 +293,10 @@ def process_single_file(fileName, gistFiles):
 def main():
     config = getConfig()
     directory_to_scan = config.get("notesFolder")
-    with notes_repository_lock(directory_to_scan):
+    with try_notes_repository_lock(directory_to_scan) as lock_acquired:
+        if not lock_acquired:
+            print("Skipping Gist sync: the notes repository is currently locked.")
+            return
         create_backlinks(directory_to_scan)
         process_markdown_files(directory_to_scan)
 

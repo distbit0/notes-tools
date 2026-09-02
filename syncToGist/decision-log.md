@@ -7,3 +7,4 @@
 - Gist and teleport processing is limited to top-level Markdown files in `~/notes`. Nested repository and workflow files are outside the publication boundary.
 - Screen raw body markers before parsing frontmatter so malformed unshared notes cannot block the run. Selected or linked notes still require valid metadata and fail visibly when malformed.
 - Resolve readable wikilinks against slugged filenames rather than requiring link text to match the on-disk stem exactly.
+- Skip a Gist sync when another process holds the notes repository lock. The next scheduled run catches up without accumulating blocked sync processes behind long-running writers.
