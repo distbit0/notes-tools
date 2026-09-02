@@ -17,15 +17,14 @@ from src.dynamic_habit_text import (
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 README_TEXT = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
 TAP_HABIT_SOURCE_TEXT = (
-    Path.home() / "notes/habit-and-TAP-reminders.md"
+    Path.home() / "notes/habit-and-tap-reminders.md"
 ).read_text(encoding="utf-8")
 
 
 def test_source_sampling_excludes_leading_frontmatter():
-    selected_text = select_habit_source_text(TAP_HABIT_SOURCE_TEXT, 400)
+    selected_text = select_habit_source_text(TAP_HABIT_SOURCE_TEXT, 600)
 
-    assert selected_text.startswith("feeling tired or open YouTube")
-    assert selected_text.endswith("it doesn't go anywhere")
+    assert selected_text == frontmatter_body(TAP_HABIT_SOURCE_TEXT).strip()
     assert "gist_url:" not in selected_text
     assert "live: true" not in selected_text
 
