@@ -72,6 +72,8 @@ def add_frontmatter(file_path, date=None, description="", articleUrl="", isHidde
         "date": date + " 00:00",
         "headerImage": False,
         "category": category,
+        "hidden": isHidden,
+        "published": True,
         "author": utils.getConfig()["author"],
         "description": description,
         "articleUrl": articleUrl,

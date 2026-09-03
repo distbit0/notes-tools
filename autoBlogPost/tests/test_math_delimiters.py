@@ -1,5 +1,10 @@
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
+import frontmatter
 
 import main
 import utils
@@ -72,6 +77,35 @@ class MathDelimiterTests(unittest.TestCase):
             str(NOTES_FOLDER / ".agents/skills/scheduled-tweet-ideas/SKILL.md"),
             matching_paths,
         )
+
+    def test_published_note_overrides_legacy_unpublished_metadata(self):
+        source_path = NOTES_FOLDER / "actually-impact-futures.md"
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            test_path = Path(temporary_directory) / source_path.name
+            shutil.copyfile(source_path, test_path)
+            post = frontmatter.load(test_path)
+            post["hidden"] = True
+            post["published"] = False
+            frontmatter.dump(post, test_path)
+
+            with mock.patch.multiple(
+                main,
+                create=True,
+                postPostfix=utils.getConfig()["blogPostIdentifierPostfix"],
+                hiddenPostPostfix=utils.getConfig()["hiddenPostPostfix"],
+            ):
+                main.add_frontmatter(
+                    str(test_path),
+                    date="2026-02-03",
+                    description=post["description"],
+                    articleUrl=post["articleUrl"],
+                    isHidden=False,
+                )
+
+            normalized_post = frontmatter.load(test_path)
+            self.assertFalse(normalized_post["hidden"])
+            self.assertTrue(normalized_post["published"])
 
 
 if __name__ == "__main__":
