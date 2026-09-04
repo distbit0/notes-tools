@@ -134,28 +134,6 @@ def remove_scratchpad_content(content):
     return content
 
 
-def uses_explicit_tex_syntax(math_body):
-    return any(marker in math_body for marker in ("\\", "{", "}", "_", "^"))
-
-
-def convert_tex_dollar_delimiters(md_string):
-    display_dollar_span = re.compile(r"(?<!\\)\$\$(.+?)(?<!\\)\$\$", re.DOTALL)
-    inline_dollar_span = re.compile(r"(?<!\\)\$(?!\$)([^$\n]+?)(?<!\\)\$(?!\$)")
-
-    md_string = display_dollar_span.sub(
-        lambda match: rf"\\[{match.group(1)}\\]",
-        md_string,
-    )
-
-    def replace_explicit_tex(match):
-        math_body = match.group(1)
-        if not uses_explicit_tex_syntax(math_body):
-            return match.group(0)
-        return rf"\\({math_body}\\)"
-
-    return inline_dollar_span.sub(replace_explicit_tex, md_string)
-
-
 def formatPostContents(file_path, allFileNames):
     post = frontmatter.load(file_path)
     content = post.content
@@ -169,7 +147,6 @@ def formatPostContents(file_path, allFileNames):
     content = content.replace(postPostfix, "")
     content = content.replace(hiddenPostPostfix, "")
     content = remove_hashtags(content)[0]
-    content = convert_tex_dollar_delimiters(content)
     contentWithDoubleSpaces = ""
     for line in content.split("\n"):
         contentWithDoubleSpaces += line

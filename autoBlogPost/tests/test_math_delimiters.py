@@ -17,51 +17,50 @@ def line_containing(path, text):
     return next(line for line in path.read_text().splitlines() if text in line)
 
 
-def text_between(path, start_text, end_text):
-    text = path.read_text()
-    start_index = text.index(start_text)
-    end_index = text.index(end_text, start_index)
-    return text[start_index:end_index]
+def formatted_source_content(source_path):
+    config = utils.getConfig()
+    publication_markers = (
+        config["blogPostIdentifierPostfix"],
+        config["hiddenPostPostfix"],
+    )
+    published_paths = []
+    for publication_marker in publication_markers:
+        published_paths.extend(
+            main.find_files_containing_string(str(NOTES_FOLDER), publication_marker)
+        )
+    published_names = [Path(path).name for path in published_paths]
+
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        test_path = Path(temporary_directory) / source_path.name
+        shutil.copyfile(source_path, test_path)
+        with mock.patch.multiple(
+            main,
+            create=True,
+            contactInfo=config["contactInfo"],
+            postPostfix=config["blogPostIdentifierPostfix"],
+            hiddenPostPostfix=config["hiddenPostPostfix"],
+        ):
+            main.formatPostContents(str(test_path), published_names)
+        return frontmatter.load(test_path).content
 
 
 class MathDelimiterTests(unittest.TestCase):
-    def test_currency_in_price_manipulation_article_stays_literal(self):
-        source_path = NOTES_FOLDER / "draft-making-price-manipulation-attacks-un-profitable.md"
-        source_line = line_containing(source_path, "$100k+ per year")
+    def test_currency_code_spans_pass_through_formatting(self):
+        source_path = NOTES_FOLDER / "actually-impact-futures.md"
+        source_line = line_containing(source_path, "Probability error amplification")
 
-        converted_line = main.convert_tex_dollar_delimiters(source_line)
+        formatted_content = formatted_source_content(source_path)
 
-        self.assertEqual(source_line, converted_line)
+        self.assertIn(source_line, formatted_content)
 
-    def test_explicit_tex_in_decision_market_article_uses_mathjax_safe_delimiters(self):
-        source_path = NOTES_FOLDER / "decision-market-challenges.md"
-        source_line = line_containing(source_path, r"$\frac{\textsf{Long}^{\text{yes}}_i}{\textsf{Long}^{\text{no}}}$")
-
-        converted_line = main.convert_tex_dollar_delimiters(source_line)
-
-        self.assertNotIn(r"$\textsf", converted_line)
-        self.assertIn(r"\\(\textsf{Long}^{\text{no}}\\)", converted_line)
-        self.assertIn(r"\\(\frac{\textsf{Long}^{\text{yes}}_i}{\textsf{Long}^{\text{no}}}\\)", converted_line)
-
-    def test_plain_currency_zero_in_math_heavy_article_stays_literal(self):
+    def test_explicit_inline_math_and_literal_currency_pass_through_formatting(self):
         source_path = NOTES_FOLDER / "decision-market-challenges.md"
         source_line = line_containing(source_path, "worth $0 due")
 
-        converted_line = main.convert_tex_dollar_delimiters(source_line)
+        formatted_content = formatted_source_content(source_path)
 
-        self.assertIn("worth $0 due", converted_line)
-        self.assertIn(r"\\(\textsf{Short}^{\text{yes}}\\)", converted_line)
-
-    def test_display_math_dollar_delimiters_use_mathjax_safe_delimiters(self):
-        source_path = NOTES_FOLDER / "adsb-index.md"
-        source_block = text_between(source_path, "By definition,", "3. **Liquidity Events**")
-
-        converted_block = main.convert_tex_dollar_delimiters(source_block)
-
-        self.assertNotIn("$$", converted_block)
-        self.assertIn(r"\\[", converted_block)
-        self.assertIn(r"p(a) + p(b) + p(c) \;=\; 1.", converted_block)
-        self.assertIn(r"\\]", converted_block)
+        self.assertIn(source_line, formatted_content)
+        self.assertIn(r"\\(\textsf{Short}^{\text{yes}}\\)", formatted_content)
 
     def test_blog_post_scan_ignores_notes_subdirectories(self):
         matching_paths = main.find_files_containing_string(
