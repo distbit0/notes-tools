@@ -8,6 +8,7 @@ import glob
 import re
 import shlex
 import subprocess
+from urllib.parse import urlparse
 import invertBlockquotes
 
 
@@ -26,6 +27,11 @@ def note_slug(value):
             slug_chars.append("-")
             previous_was_separator = True
     return "".join(slug_chars).strip("-")
+
+
+def publication_name_from_article_url(article_url, fallback_name):
+    article_path = urlparse(article_url).path.rstrip("/")
+    return Path(article_path).name if article_path else fallback_name
 
 
 # function to check if a file has valid front matter
@@ -268,7 +274,7 @@ def main():
             post = frontmatter.load(file_path)
             description = post["description"] if "description" in post else ""
             articleUrl = post["articleUrl"] if "articleUrl" in post else ""
-            filename = articleUrl.split("/")[-1] if "articleUrl" in post else filename
+            filename = publication_name_from_article_url(articleUrl, filename)
             date = (
                 datetime.strptime(post["date"], "%Y-%m-%d  %H:%M")
                 .date()

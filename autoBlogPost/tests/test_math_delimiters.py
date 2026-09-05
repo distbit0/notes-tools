@@ -106,6 +106,21 @@ class MathDelimiterTests(unittest.TestCase):
             self.assertFalse(normalized_post["hidden"])
             self.assertTrue(normalized_post["published"])
 
+    def test_trailing_slash_article_url_keeps_its_path_slug(self):
+        source_path = NOTES_FOLDER / "pooled-rare-event-count-markets.md"
+        post = frontmatter.load(source_path)
+
+        publication_name = main.publication_name_from_article_url(
+            post["articleUrl"],
+            source_path.name,
+        )
+
+        self.assertEqual(publication_name, "pooled-rare-event-count-markets")
+        self.assertEqual(
+            main.generateBlogPostFileName(publication_name, "2026-09-02"),
+            "2026-09-02-pooled-rare-event-count-markets.md",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
