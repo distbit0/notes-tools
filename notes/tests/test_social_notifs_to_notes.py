@@ -65,6 +65,54 @@ def real_x_dm_notification() -> social_notif_common.SocialNotification:
     )
 
 
+def test_failed_collector_preserves_cursor_for_retry(monkeypatch) -> None:
+    notification = real_x_dm_notification()
+    state = social_notif_common.empty_state()
+    captured_timeout = requests.ReadTimeout(
+        "HTTPSConnectionPool(host='x.com', port=443): "
+        "Read timed out. (read timeout=30)"
+    )
+
+    def collect_then_fail(candidate_state):
+        social_notif_common.update_state_cursor(
+            candidate_state, "x_dm", notification.cursor
+        )
+        raise captured_timeout
+
+    def collect_successfully(candidate_state):
+        social_notif_common.update_state_cursor(
+            candidate_state, "x_dm", notification.cursor
+        )
+        return [notification]
+
+    # The other sources returned no notifications in the captured failed run.
+    monkeypatch.setattr(
+        social_notifs_to_notes, "collect_lesswrong_all", Mock(return_value=[])
+    )
+    monkeypatch.setattr(
+        social_notifs_to_notes, "collect_ethresearch_all", Mock(return_value=[])
+    )
+    monkeypatch.setattr(social_notifs_to_notes.logger, "exception", Mock())
+    monkeypatch.setattr(
+        social_notifs_to_notes, "collect_x_notifications", collect_then_fail
+    )
+
+    notifications, errors = social_notifs_to_notes.collect_source_notifications(state)
+
+    assert notifications == []
+    assert errors == [f"X: {captured_timeout}"]
+    assert state == social_notif_common.empty_state()
+
+    monkeypatch.setattr(
+        social_notifs_to_notes, "collect_x_notifications", collect_successfully
+    )
+    notifications, errors = social_notifs_to_notes.collect_source_notifications(state)
+
+    assert notifications == [notification]
+    assert errors == []
+    assert state["x_dm"] == {notification.cursor.record_key: notification.cursor}
+
+
 def test_save_social_notifications_replaces_legacy_entry_for_real_conversation(
     tmp_path: Path,
 ) -> None:

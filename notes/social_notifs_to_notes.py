@@ -106,18 +106,22 @@ def collect_source_notifications(
     errors: list[str] = []
 
     collectors = (
-        ("X", lambda: collect_x_notifications(state)),
-        ("LessWrong", lambda: collect_lesswrong_all(state)),
-        ("EthResearch", lambda: collect_ethresearch_all(state)),
+        ("X", collect_x_notifications),
+        ("LessWrong", collect_lesswrong_all),
+        ("EthResearch", collect_ethresearch_all),
     )
 
     for source_name, collect in collectors:
+        # A later request can fail after a collector has advanced earlier cursors.
+        candidate_state = {bucket: cursors.copy() for bucket, cursors in state.items()}
         try:
-            source_notifications = collect()
+            source_notifications = collect(candidate_state)
         except Exception as exc:
             logger.exception(f"{source_name} collection failed")
             errors.append(f"{source_name}: {exc}")
             continue
+        state.clear()
+        state.update(candidate_state)
         notifications.extend(source_notifications)
 
     notifications.sort(key=lambda notification: cursor_sort_key(notification.cursor))
