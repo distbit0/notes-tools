@@ -12,6 +12,7 @@
     "audioEncoding": "MP3",
     "playbackSpeed": 2.16,
     "pauseSeconds": 5.0,
-    "cacheDir": "./.tts_cache"
+    "cacheDir": "./.tts_cache",
+    "headphonesMac": "58:18:62:47:15:13"
   }
 }

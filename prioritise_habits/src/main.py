@@ -57,6 +57,11 @@ try:
 except ImportError:
     from tts_text import remove_tts_pause_markers, split_tts_text
 
+try:
+    from .audio_output import get_headphones_sink, play_audio_file, wait_on_headphones
+except ImportError:
+    from audio_output import get_headphones_sink, play_audio_file, wait_on_headphones
+
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
 CONFIG_FILE = PROJECT_ROOT / "config.json"
 LAST_RUN_FILE = PROJECT_ROOT / ".last_run"
@@ -101,7 +106,6 @@ GOOGLE_CLOUD_TEXT_TO_SPEECH_FIELDS = (
 PHONE_AUDIO_CONTROL_STATES = {"pause", "play"}
 PHONE_AUDIO_PAUSE_SETTLE_DELAY_SECONDS = 2
 PHONE_AUDIO_RESUME_DELAY_SECONDS = 10
-AUDIO_PLAYBACK_LEAD_IN_MILLISECONDS = 750
 BLUETOOTH_AUDIO_TRANSPORT_BUSY_STATES = {"active", "broadcasting", "pending"}
 ACTIVE_HABIT_FIELD_ORDER = (
     "id",
@@ -1078,41 +1082,6 @@ def get_spoken_habit_text(habit_text):
     return spoken_text.replace("`", "").strip()
 
 
-def is_bluetooth_audio_sink_metadata(wpctl_output):
-    return (
-        'device.api = "bluez5"' in wpctl_output
-        or 'node.name = "bluez_output.' in wpctl_output
-        or "api.bluez5." in wpctl_output
-    )
-
-
-def get_bluetooth_address_from_audio_sink_metadata(wpctl_output):
-    address_match = re.search(r'api\.bluez5\.address = "([^"]+)"', wpctl_output)
-    if address_match:
-        return address_match.group(1).upper()
-
-    node_name_match = re.search(
-        r'node\.name = "bluez_output\.([0-9A-Fa-f_]{17})\.', wpctl_output
-    )
-    if node_name_match:
-        return node_name_match.group(1).replace("_", ":").upper()
-    return None
-
-
-def is_default_audio_output_bluetooth():
-    try:
-        result = subprocess.run(
-            ["wpctl", "inspect", "@DEFAULT_AUDIO_SINK@"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except (FileNotFoundError, subprocess.CalledProcessError) as error:
-        logger.warning(f"Cannot inspect default audio sink for TTS: {error}")
-        return False
-    return is_bluetooth_audio_sink_metadata(result.stdout)
-
-
 def get_bluez_media_transport_paths(bluetooth_address):
     device_path = f"/org/bluez/hci\\d+/dev_{bluetooth_address.replace(':', '_')}"
     transport_path_pattern = rf"({device_path}(?:/[^\s]+)*/fd\d+)"
@@ -1181,24 +1150,8 @@ def get_bluez_media_transport_states(bluetooth_address):
     return transport_states
 
 
-def is_default_bluetooth_audio_transport_busy():
-    try:
-        result = subprocess.run(
-            ["wpctl", "inspect", "@DEFAULT_AUDIO_SINK@"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except (FileNotFoundError, subprocess.CalledProcessError) as error:
-        logger.warning(f"Cannot inspect default audio sink transport for TTS: {error}")
-        return True
-
-    bluetooth_address = get_bluetooth_address_from_audio_sink_metadata(result.stdout)
-    if bluetooth_address is None:
-        logger.warning("Cannot find Bluetooth address for default audio sink")
-        return True
-
-    transport_states = get_bluez_media_transport_states(bluetooth_address)
+def is_headphones_audio_transport_busy(headphones_mac):
+    transport_states = get_bluez_media_transport_states(headphones_mac)
     if transport_states is None:
         return True
 
@@ -1441,27 +1394,6 @@ def get_habit_audio_paths(text_to_speech_config, item):
     ]
 
 
-def play_audio_file(audio_path, playback_speed=1.0):
-    audio_filters = []
-    if playback_speed != 1.0:
-        audio_filters.append(f"atempo={playback_speed:g}")
-    audio_filters.append(f"adelay={AUDIO_PLAYBACK_LEAD_IN_MILLISECONDS}:all=1")
-    subprocess.run(
-        [
-            "ffplay",
-            "-nodisp",
-            "-autoexit",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-af",
-            ",".join(audio_filters),
-            str(audio_path),
-        ],
-        check=True,
-    )
-
-
 def build_phone_audio_control_url(trigger_url, state):
     if state not in PHONE_AUDIO_CONTROL_STATES:
         raise ValueError(f"Unsupported phone audio control state: {state}")
@@ -1498,19 +1430,25 @@ def send_phone_audio_control(trigger_url, state):
     logger.info(f"Sent phone audio {state} trigger")
 
 
-def can_start_audio_habit_batch():
-    if not is_default_audio_output_bluetooth():
+def can_start_audio_habit_batch(headphones_mac):
+    if not get_headphones_sink(headphones_mac):
         logger.warning(
-            "Skipping TTS because the default audio output is not a Bluetooth sink"
+            "Skipping TTS because the default audio output is not the configured XM6 headphones"
         )
         return False
-    return not is_default_bluetooth_audio_transport_busy()
+    return not is_headphones_audio_transport_busy(headphones_mac)
 
 
 def speak_ready_habit_triggers(
     text_to_speech_config, ready_triggers, phone_audio_control_trigger_url=None
 ):
-    if not ready_triggers or not can_start_audio_habit_batch():
+    headphones_mac = text_to_speech_config.get("headphonesMac")
+    if not isinstance(headphones_mac, str) or not re.fullmatch(
+        r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", headphones_mac
+    ):
+        raise ValueError("textToSpeech.headphonesMac must be a Bluetooth MAC address")
+    headphones_mac = headphones_mac.upper()
+    if not ready_triggers or not can_start_audio_habit_batch(headphones_mac):
         return []
 
     default_playback_speed = text_to_speech_config.get(
@@ -1519,9 +1457,9 @@ def speak_ready_habit_triggers(
     )
     playback_queue = []
     for item in ready_triggers:
-        if not is_default_audio_output_bluetooth():
+        if not get_headphones_sink(headphones_mac):
             logger.warning(
-                "Skipping TTS because the default audio output is not a Bluetooth sink"
+                "Skipping TTS because the default audio output is not the configured XM6 headphones"
             )
             break
         try:
@@ -1532,7 +1470,7 @@ def speak_ready_habit_triggers(
         if not audio_paths:
             logger.warning("Skipping TTS for habit with empty name")
             continue
-        if not is_default_audio_output_bluetooth():
+        if not get_headphones_sink(headphones_mac):
             logger.warning(
                 "Skipping TTS playback because the default audio output changed"
             )
@@ -1556,36 +1494,26 @@ def speak_ready_habit_triggers(
             phone_audio_was_paused = True
             time_module.sleep(PHONE_AUDIO_PAUSE_SETTLE_DELAY_SECONDS)
 
-        if phone_audio_control_trigger_url and not can_start_audio_habit_batch():
+        if phone_audio_control_trigger_url and not can_start_audio_habit_batch(headphones_mac):
             return []
 
         for item, audio_paths, playback_speed in playback_queue:
-            if (
-                phone_audio_control_trigger_url
-                and not is_default_audio_output_bluetooth()
-            ):
+            if not get_headphones_sink(headphones_mac):
                 logger.warning(
-                    "Skipping TTS because the default audio output is not a Bluetooth sink"
+                    "Skipping TTS because the default audio output is not the configured XM6 headphones"
                 )
                 break
-            completed_segment_count = 0
             for segment_index, audio_path in enumerate(audio_paths):
                 if segment_index:
-                    time_module.sleep(
-                        text_to_speech_config[TEXT_TO_SPEECH_PAUSE_SECONDS_FIELD]
+                    wait_on_headphones(
+                        text_to_speech_config[TEXT_TO_SPEECH_PAUSE_SECONDS_FIELD],
+                        headphones_mac,
                     )
-                    if not is_default_audio_output_bluetooth():
-                        logger.warning(
-                            "Stopping TTS during a pause because the default audio "
-                            "output is not a Bluetooth sink"
-                        )
-                        break
-                play_audio_file(audio_path, playback_speed)
-                completed_segment_count += 1
-            if completed_segment_count != len(audio_paths):
-                break
+                play_audio_file(
+                    audio_path, playback_speed, headphones_mac=headphones_mac
+                )
             spoken_triggers.append(item)
-    except (RuntimeError, ValueError, subprocess.CalledProcessError) as error:
+    except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as error:
         logger.error(f"Text-to-speech output failed: {error}")
     finally:
         if phone_audio_was_paused:

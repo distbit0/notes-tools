@@ -33,7 +33,6 @@ from src.main import (
     build_phone_audio_control_url,
     create_persistent_desktop_notifications,
     get_completed_habits_after_ready_triggers,
-    get_bluetooth_address_from_audio_sink_metadata,
     get_bluez_media_transport_paths,
     get_habit_audio_file_path,
     get_habit_due_outputs,
@@ -43,11 +42,9 @@ from src.main import (
     get_or_create_text_to_speech_audio,
     get_ready_habit_triggers,
     get_ready_triggers_for_due_output,
-    is_bluetooth_audio_sink_metadata,
     load_habit_store,
     mark_triggers_output_delivered,
     merge_habit_updates,
-    play_audio_file,
     save_habit_store,
     sample_habit_trigger_time,
     speak_ready_habit_triggers,
@@ -437,75 +434,6 @@ def test_persistent_desktop_notifications_use_notify_send(monkeypatch):
     ]
 
 
-def test_bluetooth_sink_detection_uses_wpctl_metadata():
-    bluetooth_sink_output = f"""
-id 223, type PipeWire:Interface:Node
-    api.bluez5.address = "{HEADPHONES_MAC}"
-    device.api = "bluez5"
-  * media.class = "Audio/Sink"
-  * node.description = "WH-1000XM6"
-  * node.name = "bluez_output.{NORMALIZED_HEADPHONES_MAC}.1"
-"""
-    internal_speaker_output = """
-id 90, type PipeWire:Interface:Node
-    api.alsa.path = "hw:sofsoundwire,2"
-    device.api = "alsa"
-    device.icon_name = "audio-speakers"
-  * media.class = "Audio/Sink"
-  * node.description = "Lunar Lake-M HD Audio Controller Speaker"
-  * node.name = "alsa_output.pci-0000_00_1f.3-platform-sof_sdw.HiFi__Speaker__sink"
-"""
-
-    assert is_bluetooth_audio_sink_metadata(bluetooth_sink_output)
-    assert not is_bluetooth_audio_sink_metadata(internal_speaker_output)
-
-
-def test_bluetooth_sink_address_is_read_from_wpctl_metadata():
-    bluetooth_sink_output = f"""
-id 196, type PipeWire:Interface:Node
-    api.bluez5.address = "{HEADPHONES_MAC}"
-    api.bluez5.codec = "sbc_xq"
-    api.bluez5.profile = "a2dp-sink"
-    api.bluez5.transport = ""
-    card.profile.device = "1"
-  * client.id = "48"
-    clock.quantum-limit = "8192"
-    device.api = "bluez5"
-  * device.id = "189"
-    device.routes = "1"
-  * factory.id = "12"
-    factory.name = "api.bluez5.a2dp.sink"
-    library.name = "audioconvert/libspa-audioconvert"
-  * media.class = "Audio/Sink"
-    media.name = "WH-1000XM6"
-  * node.description = "WH-1000XM6"
-    node.driver = "true"
-    node.loop.name = "data-loop.0"
-  * node.name = "bluez_output.{NORMALIZED_HEADPHONES_MAC}.1"
-    node.pause-on-idle = "false"
-  * object.serial = "211"
-    port.group = "stream.0"
-  * priority.driver = "1010"
-  * priority.session = "1010"
-    spa.object.id = "1"
-"""
-    bluetooth_sink_output_without_address = f"""
-id 196, type PipeWire:Interface:Node
-  * node.name = "bluez_output.{NORMALIZED_HEADPHONES_MAC}.1"
-"""
-
-    assert (
-        get_bluetooth_address_from_audio_sink_metadata(bluetooth_sink_output)
-        == HEADPHONES_MAC
-    )
-    assert (
-        get_bluetooth_address_from_audio_sink_metadata(
-            bluetooth_sink_output_without_address
-        )
-        == HEADPHONES_MAC
-    )
-
-
 def test_bluez_media_transport_paths_are_matched_by_device_address(monkeypatch):
     busctl_tree_output = f"""
 /
@@ -539,6 +467,7 @@ def test_bluez_media_transport_paths_are_matched_by_device_address(monkeypatch):
 
 def test_text_to_speech_audio_is_cached(tmp_path, monkeypatch):
     text_to_speech_config = {
+        "headphonesMac": HEADPHONES_MAC,
         "provider": "elevenlabs",
         "voiceId": "JBFqnCBsd6RMkjVDRZzb",
         "modelId": "eleven_multilingual_v2",
@@ -580,6 +509,7 @@ def test_text_to_speech_audio_is_cached(tmp_path, monkeypatch):
 
 def test_google_cloud_text_to_speech_audio_is_cached(tmp_path, monkeypatch):
     text_to_speech_config = {
+        "headphonesMac": HEADPHONES_MAC,
         "provider": "google",
         "languageCode": "en-US",
         "voiceName": "en-US-Neural2-D",
@@ -655,53 +585,6 @@ def test_text_to_speech_config_rejects_invalid_playback_speed():
         get_text_to_speech_config(config)
 
 
-def test_audio_playback_adds_silence_lead_in(tmp_path, monkeypatch):
-    audio_path = tmp_path / "habit.mp3"
-    audio_path.write_bytes(b"cached mp3 bytes")
-    subprocess_calls = []
-
-    def fake_run(command, check):
-        subprocess_calls.append({"command": command, "check": check})
-
-    monkeypatch.setattr("src.main.subprocess.run", fake_run)
-
-    play_audio_file(audio_path)
-
-    assert subprocess_calls == [
-        {
-            "command": [
-                "ffplay",
-                "-nodisp",
-                "-autoexit",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-af",
-                "adelay=750:all=1",
-                str(audio_path),
-            ],
-            "check": True,
-        }
-    ]
-
-
-def test_audio_playback_applies_per_habit_double_speed(tmp_path, monkeypatch):
-    audio_path = tmp_path / "habit.mp3"
-    audio_path.write_bytes(b"cached mp3 bytes")
-    subprocess_calls = []
-
-    def fake_run(command, check):
-        subprocess_calls.append({"command": command, "check": check})
-
-    monkeypatch.setattr("src.main.subprocess.run", fake_run)
-
-    play_audio_file(audio_path, 2.0)
-
-    assert subprocess_calls[0]["command"][
-        subprocess_calls[0]["command"].index("-af") + 1
-    ] == "atempo=2,adelay=750:all=1"
-
-
 def test_custom_habit_audio_file_plays_without_generating_tts(monkeypatch):
     audio_file = CUSTOM_AUDIO_FILE
     custom_audio_path = PROJECT_ROOT / audio_file
@@ -724,21 +607,21 @@ def test_custom_habit_audio_file_plays_without_generating_tts(monkeypatch):
     def fail_if_tts_is_requested(config, habit_text):
         raise AssertionError("custom audio habit should not request generated TTS")
 
-    monkeypatch.setattr("src.main.is_default_audio_output_bluetooth", lambda: True)
+    monkeypatch.setattr("src.main.get_headphones_sink", lambda mac: "211")
     monkeypatch.setattr(
-        "src.main.is_default_bluetooth_audio_transport_busy", lambda: False
+        "src.main.is_headphones_audio_transport_busy", lambda mac: False
     )
     monkeypatch.setattr(
         "src.main.get_or_create_text_to_speech_audio", fail_if_tts_is_requested
     )
     monkeypatch.setattr(
         "src.main.play_audio_file",
-        lambda audio_path, playback_speed: played_paths.append(
+        lambda audio_path, playback_speed, **kwargs: played_paths.append(
             (audio_path, playback_speed)
         ),
     )
 
-    spoken_triggers = speak_ready_habit_triggers({}, ready_triggers)
+    spoken_triggers = speak_ready_habit_triggers({"headphonesMac": HEADPHONES_MAC}, ready_triggers)
 
     assert [item["habit"]["id"] for item in spoken_triggers] == [
         CUSTOM_AUDIO_HABIT_ID
@@ -760,7 +643,7 @@ def test_habit_audio_file_rejects_non_mp3_path():
 def test_text_to_speech_speaks_sequentially_and_stops_without_bluetooth(
     tmp_path, monkeypatch
 ):
-    text_to_speech_config = {"cacheDir": str(tmp_path)}
+    text_to_speech_config = {"cacheDir": str(tmp_path), "headphonesMac": HEADPHONES_MAC}
     ready_triggers = [
         {
             "habit": {
@@ -780,7 +663,7 @@ def test_text_to_speech_speaks_sequentially_and_stops_without_bluetooth(
             "trigger": {"time": "2026-06-12T06:31:00+07:00"},
         },
     ]
-    bluetooth_states = iter([True, True, True, False])
+    bluetooth_states = iter(["211", "211", "211", None, None])
     generated_text = []
     played_paths = []
 
@@ -791,29 +674,30 @@ def test_text_to_speech_speaks_sequentially_and_stops_without_bluetooth(
         return audio_path
 
     monkeypatch.setattr(
-        "src.main.is_default_audio_output_bluetooth",
-        lambda: next(bluetooth_states),
+        "src.main.get_headphones_sink",
+        lambda mac: next(bluetooth_states),
     )
     monkeypatch.setattr(
-        "src.main.is_default_bluetooth_audio_transport_busy", lambda: False
+        "src.main.is_headphones_audio_transport_busy", lambda mac: False
     )
     monkeypatch.setattr("src.main.get_or_create_text_to_speech_audio", fake_get_audio)
     monkeypatch.setattr(
         "src.main.play_audio_file",
-        lambda path, playback_speed: played_paths.append((path, playback_speed)),
+        lambda path, playback_speed, **kwargs: played_paths.append((path, playback_speed)),
     )
 
     spoken_triggers = speak_ready_habit_triggers(text_to_speech_config, ready_triggers)
 
-    assert [item["habit"]["id"] for item in spoken_triggers] == ["habit-1"]
+    assert spoken_triggers == []
     assert generated_text == [REPLY_HABIT_TEXT]
-    assert [(path.name, speed) for path, speed in played_paths] == [("0.mp3", 2.0)]
+    assert played_paths == []
 
 
 def test_text_to_speech_pause_marker_splits_audio_and_waits_between_segments(
     tmp_path, monkeypatch
 ):
     text_to_speech_config = {
+        "headphonesMac": HEADPHONES_MAC,
         "provider": "google",
         "cacheDir": str(tmp_path),
         "pauseSeconds": 5.0,
@@ -842,18 +726,18 @@ def test_text_to_speech_pause_marker_splits_audio_and_waits_between_segments(
         generated_text.append(habit_text)
         return audio_path
 
-    monkeypatch.setattr("src.main.is_default_audio_output_bluetooth", lambda: True)
+    monkeypatch.setattr("src.main.get_headphones_sink", lambda mac: "211")
     monkeypatch.setattr(
-        "src.main.is_default_bluetooth_audio_transport_busy", lambda: False
+        "src.main.is_headphones_audio_transport_busy", lambda mac: False
     )
     monkeypatch.setattr("src.main.get_or_create_text_to_speech_audio", fake_get_audio)
     monkeypatch.setattr(
         "src.main.play_audio_file",
-        lambda path, playback_speed: event_log.append(f"play:{path.name}"),
+        lambda path, playback_speed, **kwargs: event_log.append(f"play:{path.name}"),
     )
     monkeypatch.setattr(
-        "src.main.time_module.sleep",
-        lambda seconds: event_log.append(f"sleep:{seconds:g}"),
+        "src.main.wait_on_headphones",
+        lambda seconds, mac: event_log.append(f"sleep:{seconds:g}"),
     )
 
     spoken_triggers = speak_ready_habit_triggers(text_to_speech_config, ready_triggers)
@@ -892,9 +776,9 @@ def test_phone_audio_is_paused_around_queued_tts_batch(tmp_path, monkeypatch):
     def fake_get_habit_audio_paths(config, item):
         return [tmp_path / f"{item['habit']['id']}.mp3"]
 
-    monkeypatch.setattr("src.main.is_default_audio_output_bluetooth", lambda: True)
+    monkeypatch.setattr("src.main.get_headphones_sink", lambda mac: "211")
     monkeypatch.setattr(
-        "src.main.is_default_bluetooth_audio_transport_busy", lambda: False
+        "src.main.is_headphones_audio_transport_busy", lambda mac: False
     )
     monkeypatch.setattr("src.main.get_habit_audio_paths", fake_get_habit_audio_paths)
     monkeypatch.setattr(
@@ -907,13 +791,13 @@ def test_phone_audio_is_paused_around_queued_tts_batch(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         "src.main.play_audio_file",
-        lambda audio_path, playback_speed: event_log.append(
+        lambda audio_path, playback_speed, **kwargs: event_log.append(
             f"play:{audio_path.name}:{playback_speed:g}x"
         ),
     )
 
     spoken_triggers = speak_ready_habit_triggers(
-        {},
+        {"headphonesMac": HEADPHONES_MAC},
         ready_triggers,
         trigger_url,
     )
@@ -983,6 +867,7 @@ def test_random_tts_voice_can_select_each_configured_voice_for_fresh_triggers(
     )
 
     text_to_speech_config = {
+        "headphonesMac": HEADPHONES_MAC,
         "provider": "elevenlabs",
         "voiceId": configured_voice_ids[0],
         "voiceIds": configured_voice_ids,
@@ -1024,6 +909,7 @@ def test_random_google_cloud_tts_voice_is_selected_once_per_trigger(monkeypatch)
         "src.main.fetch_google_cloud_voice_names", fake_fetch_voice_names
     )
     text_to_speech_config = {
+        "headphonesMac": HEADPHONES_MAC,
         "provider": "google",
         "voiceName": "en-US-Neural2-D",
         "voiceNamePrefix": "en-US-Neural2-",
@@ -1057,15 +943,15 @@ def test_text_to_speech_waits_when_bluetooth_transport_is_busy(monkeypatch):
     def fail_if_audio_is_requested(config, habit_text):
         raise AssertionError("busy Bluetooth transport should keep TTS pending")
 
-    monkeypatch.setattr("src.main.is_default_audio_output_bluetooth", lambda: True)
+    monkeypatch.setattr("src.main.get_headphones_sink", lambda mac: "211")
     monkeypatch.setattr(
-        "src.main.is_default_bluetooth_audio_transport_busy", lambda: True
+        "src.main.is_headphones_audio_transport_busy", lambda mac: True
     )
     monkeypatch.setattr(
         "src.main.get_or_create_text_to_speech_audio", fail_if_audio_is_requested
     )
 
-    assert speak_ready_habit_triggers({}, ready_triggers) == []
+    assert speak_ready_habit_triggers({"headphonesMac": HEADPHONES_MAC}, ready_triggers) == []
 
 
 def test_delivered_output_is_not_routed_again_while_tts_waits():

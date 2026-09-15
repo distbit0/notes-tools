@@ -13,7 +13,7 @@ This script prioritizes your due habits from a local JSON file. It does not call
 - Samples each due habit trigger time between 06:00 and 12:00 local time.
 - Writes ready habit names to enabled due outputs once their sampled trigger time has passed.
 - Can sample paragraph-like segments from a text file and transform them into fresh habit text with Codex.
-- Speaks ready habit names from cached Google Cloud or ElevenLabs MP3s, or plays a configured habit MP3 file, when the default audio output is Bluetooth.
+- Speaks ready habit names from cached Google Cloud or ElevenLabs MP3s, or plays a configured habit MP3 file, only when the default audio output is the configured XM6 Bluetooth device.
 
 ## Configuration
 
@@ -26,6 +26,7 @@ Edit [`config.json`](config.json):
   "activeHabitsFile": "./active_habits.json",
   "textToSpeech": {
     "provider": "google",
+    "headphonesMac": "your-XM6-Bluetooth-MAC-address",
     "quotaProject": "your-google-cloud-project",
     "gcloudCommand": "/absolute/path/to/gcloud",
     "languageCode": "en-US",
@@ -42,6 +43,7 @@ Edit [`config.json`](config.json):
 - `lookBackDays`: number of days used when calculating completion rate.
 - `habitsStoreFile`: path to the archived habit and check-in store.
 - `activeHabitsFile`: path to the editable non-archived habits file.
+- `textToSpeech.headphonesMac`: required XM6 Bluetooth address, matched exactly against the default sink. Other Bluetooth devices and laptop speakers cannot receive habit audio.
 - `textToSpeech`: Google Cloud or ElevenLabs voice settings, the MP3 cache directory, `playbackSpeed`, and `pauseSeconds`, which controls the silence inserted for each `[[PAUSE]]` marker. `playbackSpeed` is the default for every TTS habit. With Google Cloud, `voiceName` is the fixed default and `voiceNamePrefix` selects the catalog pool used by habits with random voice enabled. The configured account must have access to `quotaProject`, the Cloud Text-to-Speech API must be enabled there, and `gcloud auth print-access-token` must work non-interactively. The script sends `quotaProject` as the quota/billing project and never stores the access token.
 
 For ElevenLabs, set `provider` to `elevenlabs` and configure `voiceId`, optional `voiceIds`, `modelId`, and `outputFormat`. Set `ELEVENLABS_API_KEY` in `.env`; the key is not logged or committed.
@@ -139,12 +141,12 @@ Each run creates or reuses a daily trigger schedule at `.habit_trigger_schedule`
 For each due habit trigger, the script samples a local time from 06:00 through 12:00.
 Only triggers whose sampled time has passed are written to their enabled outputs.
 Desktop notifications are created with `notify-send` using critical urgency and no expiry.
-Text-to-speech uses cached Google Cloud or ElevenLabs MP3 files and plays them sequentially with `ffplay`, adding a short silent lead-in so Bluetooth outputs do not clip the first word.
+Text-to-speech uses cached Google Cloud or ElevenLabs MP3 files and decodes them with `ffmpeg` and plays them sequentially with native PipeWire `pw-play`, adding a short silent lead-in so Bluetooth outputs do not clip the first word.
 Google Cloud random selection uses its `GET /v1/voices` endpoint and the configured voice-name prefix. Without a configured ElevenLabs voice pool, random selection uses ElevenLabs' paginated `GET /v2/voices` endpoint.
 Habits can set `audioFile` to play a custom MP3 through the same gated audio channel instead of generating speech.
-Audio only runs when `wpctl inspect @DEFAULT_AUDIO_SINK@` shows a Bluetooth sink.
-TTS is also deferred while the default Bluetooth sink's BlueZ media transport is already streaming from this laptop.
-If the default output is not Bluetooth, the trigger is left pending for a later run.
+Audio requires `wpctl`, `pw-play`, `ffmpeg`, and `busctl`. It only runs when `wpctl inspect @DEFAULT_AUDIO_SINK@` identifies an Audio/Sink using BlueZ with the exact configured Bluetooth address and a valid object serial. Playback targets that serial, with PipeWire fallback, reconnection, and target changes disabled (`node.dont-fallback`, `node.dont-reconnect`, and `node.dont-move`). See the [PipeWire property documentation](https://docs.pipewire.org/page_man_pipewire-props_7.html).
+The default sink is checked every 50 ms plus inspection time during playback and between speech segments. A changed, missing, or unverifiable sink kills the player and decoder, and stops the batch. Inspection has a 500 ms timeout. PipeWire's routing restrictions prevent output from moving to another device while the monitor detects the change; audio already buffered in the headphones may finish draining.
+TTS is also deferred while the configured headphones' BlueZ media transport is already streaming from this laptop. If the XM6 is unavailable or a trigger is interrupted, that trigger stays pending for a later run and restarts from its first segment. Completed triggers remain delivered.
 
 Run the script repeatedly during that window, for example from cron or another scheduler, if you want habits to appear throughout the morning instead of all at once.
 

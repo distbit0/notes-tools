@@ -16,7 +16,7 @@
 
 ## Audio delivery is gated, not degraded
 
-- Text-to-speech and custom audio remain pending until the default sink is Bluetooth. A missing custom audio file is an error and never falls back to generated speech or laptop speakers.
+- Habit audio is exclusively for the XM6 identified by its configured Bluetooth MAC address. A generic Bluetooth check is insufficient: the JBL Clip 5 must be rejected too. Losing the XM6 default sink cancels the current reminder and leaves it pending for replay, rather than continuing on another output. A missing custom audio file is an error and never falls back to generated speech or laptop speakers.
 - Playback-speed configuration applies only to generated TTS. Custom MP3 habit audio always plays at its native 1x speed.
 - Playback is sequential under a process lock because the every-minute scheduler can otherwise overlap long batches. Phone audio is paused once around the whole batch and resumed once afterward.
 - Project audio-control configuration comes from the ignored `.env`, and generated speech is cached locally to avoid repeated API spend.
