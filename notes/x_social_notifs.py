@@ -218,7 +218,9 @@ def x_timeline_entries(payload: dict[str, Any]) -> list[dict[str, Any]]:
         raw_entries = instruction.get("addEntries", {}).get("entries", [])
         if not isinstance(raw_entries, list):
             raise RuntimeError("Invalid X addEntries payload")
-        entries.extend(entry for entry in raw_entries if isinstance(entry, dict))
+        if any(not isinstance(entry, dict) for entry in raw_entries):
+            raise RuntimeError("Invalid X timeline entry")
+        entries.extend(raw_entries)
     return entries
 
 
@@ -230,16 +232,32 @@ def collect_x_mentions(
     global_objects = payload.get("globalObjects")
     if not isinstance(global_objects, dict):
         raise RuntimeError("X mentions response missing globalObjects")
+    entries = x_timeline_entries(payload)
+    unread_sort_index = x_mentions_unread_sort_index(payload)
+    if not global_objects:
+        # X omits both maps on an empty, cursor-only mentions timeline.
+        # Reject item-bearing responses rather than treating missing data as empty.
+        for entry in entries:
+            content = entry.get("content")
+            if not isinstance(content, dict) or set(content) != {"operation"}:
+                raise RuntimeError("X mentions item is missing globalObjects data")
+            operation = content["operation"]
+            cursor = operation.get("cursor") if isinstance(operation, dict) else None
+            if not isinstance(cursor, dict) or cursor.get("cursorType") not in {
+                "Top", "Bottom"
+            }:
+                raise RuntimeError("Invalid X empty mentions cursor")
+        return []
+
     tweets = global_objects.get("tweets")
     users = global_objects.get("users")
     if not isinstance(tweets, dict) or not isinstance(users, dict):
         raise RuntimeError("X mentions response missing tweets/users")
 
-    unread_sort_index = x_mentions_unread_sort_index(payload)
     previous_cursor = state["x_reply"].get("mentions")
     records: list[tuple[ItemCursor, str, str, str]] = []
 
-    for entry in x_timeline_entries(payload):
+    for entry in entries:
         item = (entry.get("content") or {}).get("item") or {}
         item_content = item.get("content") or {}
         tweet_ref = item_content.get("tweet") or {}

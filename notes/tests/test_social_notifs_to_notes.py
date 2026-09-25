@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import sys
@@ -34,6 +35,30 @@ CAPTURED_LESSWRONG_STREAMING_RESPONSE = (
     '{"BtbwfsEyeT4P2eqXu":{"_id":"BtbwfsEyeT4P2eqXu",'
     '"displayName":"gwern"}}}]'
 )
+
+
+def test_empty_x_mentions_preserves_existing_cursor() -> None:
+    # Captured on 2026-09-25 from the authenticated endpoint and local state.
+    # Unused opaque timeline/cursor identifiers are omitted; tweet ID is redacted.
+    fixtures = Path(__file__).with_name("fixtures")
+    payload = json.loads((fixtures / "x_mentions_empty.json").read_text())
+    state = social_notif_common.load_state(fixtures / "x_mentions_state.json")
+    previous_state = {bucket: cursors.copy() for bucket, cursors in state.items()}
+    client = Mock(spec=x_social_notifs.XClient)
+    client.fetch_mentions.return_value = payload
+
+    assert x_social_notifs.collect_x_mentions(client, state) == []
+    assert state == previous_state
+
+
+def test_x_mentions_error_is_not_an_empty_timeline() -> None:
+    client = Mock(spec=x_social_notifs.XClient)
+    client.fetch_mentions.return_value = json.loads(CAPTURED_X_INTERNAL_ERROR)
+    state = social_notif_common.empty_state()
+
+    with pytest.raises(RuntimeError, match="missing globalObjects"):
+        x_social_notifs.collect_x_mentions(client, state)
+    assert state == social_notif_common.empty_state()
 
 
 def assert_well_formed_notifications(

@@ -1,0 +1,42 @@
+{
+  "globalObjects": {},
+  "timeline": {
+    "instructions": [
+      {
+        "clearCache": {}
+      },
+      {
+        "addEntries": {
+          "entries": [
+            {
+              "content": {
+                "operation": {
+                  "cursor": {
+                    "cursorType": "Top"
+                  }
+                }
+              }
+            },
+            {
+              "content": {
+                "operation": {
+                  "cursor": {
+                    "cursorType": "Bottom"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "clearEntriesUnreadState": {}
+      },
+      {
+        "markEntriesUnreadGreaterThanSortIndex": {
+          "sortIndex": "1790154206642"
+        }
+      }
+    ]
+  }
+}

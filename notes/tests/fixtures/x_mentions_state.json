@@ -1,0 +1,10 @@
+{
+  "x_reply": {
+    "mentions": {
+      "latest_item_id": "[redacted tweet id]",
+      "latest_item_timestamp_ms": 1787913264063,
+      "read": true,
+      "record_key": "mentions"
+    }
+  }
+}
