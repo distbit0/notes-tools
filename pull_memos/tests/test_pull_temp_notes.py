@@ -1,11 +1,38 @@
 from pathlib import Path
 import subprocess
 import time
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 import pytest
 
 import keep_auth
 import pullTempNotes
+
+
+def test_opened_url_history_excludes_statement_credentials(tmp_path: Path) -> None:
+    # Captured from the September 27 commit failure; only tokens are redacted.
+    urls = (Path(__file__).parent / "fixtures/opened_statement_urls.txt").read_text().splitlines()
+    history_path = tmp_path / "opened-urls.md"
+    pullTempNotes.append_opened_urls(urls, history_path)
+    logged_urls = [line.split(" ", 2)[2] for line in history_path.read_text().splitlines()]
+
+    assert len(logged_urls) == len(urls)
+    for original, logged in zip(urls, logged_urls):
+        original_parts = urlsplit(original)
+        logged_parts = urlsplit(logged)
+        assert logged_parts._replace(query="") == original_parts._replace(query="")
+        assert parse_qsl(logged_parts.query) == [
+            (name, value) for name, value in parse_qsl(original_parts.query)
+            if name != "token"
+        ]
+        assert pullTempNotes.url_for_history(logged) == logged
+
+
+def test_history_preserves_urls_without_credentials() -> None:
+    urls = (Path(__file__).parent / "fixtures/opened_statement_urls.txt").read_text().splitlines()
+    for url in urls:
+        resource_url = urlunsplit(urlsplit(url)._replace(query=""))
+        assert pullTempNotes.url_for_history(resource_url) == resource_url
 
 
 class FakeNote:

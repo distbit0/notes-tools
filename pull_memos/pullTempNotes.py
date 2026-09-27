@@ -13,6 +13,7 @@ from openai import OpenAI
 import hashlib
 import subprocess
 from pathlib import Path
+from urllib.parse import unquote_plus, urlsplit, urlunsplit
 from dotenv import load_dotenv
 from send2trash import send2trash
 from processed_hashes import ProcessedHashes
@@ -370,6 +371,24 @@ def run_lineate_for_urls(urls, output_dest="browser"):
     subprocess.run(command, check=True, env=env)
 
 
+def url_for_history(url):
+    """Keep the resource address without persisting query-string credentials."""
+    parsed = urlsplit(url)
+    credential_parameters = {
+        "token", "access_token", "refresh_token", "id_token",
+        "api_key", "apikey", "client_secret", "password",
+        "signature", "x-amz-signature", "x-goog-signature",
+    }
+    query_parts = parsed.query.split("&")
+    retained_parts = [
+        part for part in query_parts
+        if unquote_plus(part.partition("=")[0]).lower() not in credential_parameters
+    ]
+    if retained_parts == query_parts:
+        return url
+    return urlunsplit(parsed._replace(query="&".join(retained_parts)))
+
+
 def append_opened_urls(urls, file_path):
     if not urls:
         return
@@ -382,7 +401,7 @@ def append_opened_urls(urls, file_path):
             if file.read(1) != "\n":
                 file.write("\n")
         for url in urls:
-            file.write(f"{timestamp} {url}\n")
+            file.write(f"{timestamp} {url_for_history(url)}\n")
 
 
 def tryDeleteFile(path, fileText):
