@@ -22,20 +22,24 @@ try:
         HABIT_RENDERED_TEXT_FIELD,
         HABIT_TEXT_MAX_WORD_COUNT_FIELD,
         HABIT_TEXT_SOURCE_FILE_FIELD,
-        HABIT_TEXT_TRANSFORM_PROMPT_FIELD,
+        HABIT_TEXT_TRANSFORM_PROMPT_NAME_FIELD,
+        get_text_transform_prompts,
         get_trigger_habit_text,
         materialize_trigger_habit_text,
         validate_dynamic_habit_text,
+        validate_habit_text_transform_prompt_names,
     )
 except ImportError:
     from dynamic_habit_text import (
         HABIT_RENDERED_TEXT_FIELD,
         HABIT_TEXT_MAX_WORD_COUNT_FIELD,
         HABIT_TEXT_SOURCE_FILE_FIELD,
-        HABIT_TEXT_TRANSFORM_PROMPT_FIELD,
+        HABIT_TEXT_TRANSFORM_PROMPT_NAME_FIELD,
+        get_text_transform_prompts,
         get_trigger_habit_text,
         materialize_trigger_habit_text,
         validate_dynamic_habit_text,
+        validate_habit_text_transform_prompt_names,
     )
 
 try:
@@ -120,7 +124,7 @@ ACTIVE_HABIT_FIELD_ORDER = (
     "dueOutputs",
     HABIT_TEXT_SOURCE_FILE_FIELD,
     HABIT_TEXT_MAX_WORD_COUNT_FIELD,
-    HABIT_TEXT_TRANSFORM_PROMPT_FIELD,
+    HABIT_TEXT_TRANSFORM_PROMPT_NAME_FIELD,
     "randomTtsVoice",
     HABIT_TTS_PLAYBACK_SPEED_FIELD,
     "audioFile",
@@ -1568,6 +1572,8 @@ def main(test_mode=None):
         active_habits_path = get_config_path(config, "activeHabitsFile")
         store = load_habit_store(store_path, active_habits_path)
         all_habits = store["habits"]
+        text_transform_prompts = get_text_transform_prompts(config)
+        validate_habit_text_transform_prompt_names(all_habits, text_transform_prompts)
         checkins = store["checkins"]
         due_habits_today = get_habits_due_today(all_habits, checkins)
 
@@ -1581,7 +1587,7 @@ def main(test_mode=None):
             materialized_ready_triggers = []
             for item in ready_triggers:
                 try:
-                    materialize_trigger_habit_text(item)
+                    materialize_trigger_habit_text(item, text_transform_prompts)
                 except (OSError, RuntimeError, ValueError) as error:
                     logger.error(
                         f"Dynamic text generation failed for habit "

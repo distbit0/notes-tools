@@ -73,7 +73,7 @@ discard TickTick-derived metadata:
     },
     "textSourceFile": "/home/user/notes/advice.md",
     "maxSourceWordCount": 800,
-    "textTransformPrompt": "Rewrite the selected source as concise flowing prose.",
+    "textTransformPromptName": "faithful-advice-rewrite",
     "randomTtsVoice": true,
     "ttsPlaybackSpeed": 2.0,
     "audioFile": "audio/read.mp3",
@@ -126,7 +126,7 @@ Notes:
 - `dueOutputs` is optional and defaults to `writeToMd` and `textToSpeech` enabled.
 - Set `writeToMd`, `desktopNotification`, and `textToSpeech` independently.
 - `textSourceFile` optionally replaces the hardcoded `name` as the delivered habit text. `name` remains the habit's short identity and prioritization label. Relative source paths are resolved from the project root.
-- A habit with `textSourceFile` must also set a positive integer `maxSourceWordCount` and a non-empty `textTransformPrompt`.
+- A habit with `textSourceFile` must also set a positive integer `maxSourceWordCount` and a `textTransformPromptName` naming an entry in `config.json` `textTransformPrompts`. Prompts are defined once there so habits sharing a prompt stay in sync; an unknown name fails explicitly.
 - If the source exceeds `maxSourceWordCount`, the script chooses a random content line and expands a contiguous window around it with fresh operating-system randomness while keeping the excerpt strictly below the cap. Source order and local context remain intact, and content inside sections larger than the cap remains eligible. A single source line at or above the cap fails explicitly.
 - Leading YAML frontmatter is removed before source length and sampling are calculated. An opening frontmatter delimiter without a closing delimiter fails explicitly.
 - Selected source text is transformed by non-interactive `codex exec` using `gpt-5.6-terra` with high reasoning. The generated text is stored in the ignored daily schedule and reused across output channels and retries for that trigger.

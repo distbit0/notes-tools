@@ -11,6 +11,7 @@ from src.dynamic_habit_text import (
     select_habit_source_text,
     transform_habit_text_with_codex,
     validate_dynamic_habit_text,
+    validate_habit_text_transform_prompt_names,
 )
 
 
@@ -115,7 +116,7 @@ def test_materialized_text_is_reused_for_trigger(tmp_path, monkeypatch):
             "name": "Habit documentation",
             "textSourceFile": str(source_path),
             "maxSourceWordCount": 100,
-            "textTransformPrompt": "Rewrite the source as prose.",
+            "textTransformPromptName": "prose",
         },
         "trigger": {},
     }
@@ -129,12 +130,21 @@ def test_materialized_text_is_reused_for_trigger(tmp_path, monkeypatch):
         "src.dynamic_habit_text.transform_habit_text_with_codex", fake_transform
     )
 
-    materialize_trigger_habit_text(item)
+    transform_prompts = {"prose": "Rewrite the source as prose."}
+    materialize_trigger_habit_text(item, transform_prompts)
     first_habit_text = item["trigger"]["habitText"]
-    materialize_trigger_habit_text(item)
+    materialize_trigger_habit_text(item, transform_prompts)
 
     assert count_words(first_habit_text) < 100
-    assert len(transform_calls) == 1
+    assert transform_calls == [("Rewrite the source as prose.", first_habit_text)]
+
+
+def test_unknown_transform_prompt_name_is_rejected():
+    with pytest.raises(ValueError, match="is not defined in config"):
+        validate_habit_text_transform_prompt_names(
+            [{"name": "Habit documentation", "textTransformPromptName": "missing"}],
+            {"prose": "Rewrite the source as prose."},
+        )
 
 
 def test_dynamic_text_fields_require_source_file():

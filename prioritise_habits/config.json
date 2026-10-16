@@ -14,5 +14,8 @@
     "pauseSeconds": 5.0,
     "cacheDir": "./.tts_cache",
     "headphonesMac": "58:18:62:47:15:13"
+  },
+  "textTransformPrompts": {
+    "faithful-advice-rewrite": "Rewrite the selected advice. Every distinct piece of content supplied in the source is mandatory: incorporate every instruction, claim, caveat, distinction, example, and contextual qualification into the output. Do not omit, downplay, sanitize, soften, qualify, reinterpret, or selectively emphasize anything because you disagree with it, consider it politically or morally objectionable, doubt its factual quality, think it is inappropriate, or prefer other advice. Do not substitute your judgment for the source. Preserve each item's meaning, force, certainty, and conditionality. You may combine genuine repetitions, but only when the same substantive content remains fully represented. If source items conflict, retain both and express the tension or their differing conditions instead of choosing one, silently reconciling them, or deleting either. Content completeness outranks brevity, elegance, narrative flow, and the target length. Before finalizing, privately verify that every supplied source item is represented; return only the rewritten text, not the coverage check. Keep related ideas together in a clear progression without turning context-dependent advice into universal rules. Aim for 330 to 430 words, but exceed that range whenever necessary to include all supplied content. Do not invent advice or use headings, bullet points, Markdown, prefaces, or commentary."
   }
 }

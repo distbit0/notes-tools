@@ -8,7 +8,8 @@ import tempfile
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
 HABIT_TEXT_SOURCE_FILE_FIELD = "textSourceFile"
 HABIT_TEXT_MAX_WORD_COUNT_FIELD = "maxSourceWordCount"
-HABIT_TEXT_TRANSFORM_PROMPT_FIELD = "textTransformPrompt"
+HABIT_TEXT_TRANSFORM_PROMPT_NAME_FIELD = "textTransformPromptName"
+CONFIG_TEXT_TRANSFORM_PROMPTS_FIELD = "textTransformPrompts"
 HABIT_RENDERED_TEXT_FIELD = "habitText"
 CODEX_MODEL = "gpt-5.6-terra"
 CODEX_REASONING_EFFORT = "high"
@@ -35,7 +36,7 @@ def validate_dynamic_habit_text(habit):
     source_path = resolve_habit_text_source_path(habit)
     dynamic_fields = {
         HABIT_TEXT_MAX_WORD_COUNT_FIELD,
-        HABIT_TEXT_TRANSFORM_PROMPT_FIELD,
+        HABIT_TEXT_TRANSFORM_PROMPT_NAME_FIELD,
     }
     configured_dynamic_fields = dynamic_fields.intersection(habit)
     if source_path is None:
@@ -64,12 +65,38 @@ def validate_dynamic_habit_text(habit):
             "must be a positive integer"
         )
 
-    transform_prompt = habit[HABIT_TEXT_TRANSFORM_PROMPT_FIELD]
-    if not isinstance(transform_prompt, str) or not transform_prompt.strip():
+    transform_prompt_name = habit[HABIT_TEXT_TRANSFORM_PROMPT_NAME_FIELD]
+    if not isinstance(transform_prompt_name, str) or not transform_prompt_name.strip():
         raise ValueError(
-            f"Habit '{habit.get('name')}' {HABIT_TEXT_TRANSFORM_PROMPT_FIELD} "
+            f"Habit '{habit.get('name')}' {HABIT_TEXT_TRANSFORM_PROMPT_NAME_FIELD} "
             "must be a non-empty string"
         )
+
+
+def get_text_transform_prompts(config):
+    transform_prompts = config.get(CONFIG_TEXT_TRANSFORM_PROMPTS_FIELD, {})
+    if not isinstance(transform_prompts, dict):
+        raise ValueError(
+            f"Config field '{CONFIG_TEXT_TRANSFORM_PROMPTS_FIELD}' must be an object"
+        )
+    for prompt_name, transform_prompt in transform_prompts.items():
+        if not isinstance(transform_prompt, str) or not transform_prompt.strip():
+            raise ValueError(
+                f"Config {CONFIG_TEXT_TRANSFORM_PROMPTS_FIELD}.{prompt_name} "
+                "must be a non-empty string"
+            )
+    return transform_prompts
+
+
+def validate_habit_text_transform_prompt_names(habits, transform_prompts):
+    for habit in habits:
+        prompt_name = habit.get(HABIT_TEXT_TRANSFORM_PROMPT_NAME_FIELD)
+        if prompt_name is not None and prompt_name not in transform_prompts:
+            raise ValueError(
+                f"Habit '{habit.get('name')}' {HABIT_TEXT_TRANSFORM_PROMPT_NAME_FIELD} "
+                f"'{prompt_name}' is not defined in config "
+                f"{CONFIG_TEXT_TRANSFORM_PROMPTS_FIELD}"
+            )
 
 
 def count_words(text):
@@ -217,7 +244,7 @@ def transform_habit_text_with_codex(transform_prompt, source_text):
         return transformed_text
 
 
-def materialize_trigger_habit_text(item):
+def materialize_trigger_habit_text(item, transform_prompts):
     habit = item["habit"]
     trigger = item["trigger"]
     source_path = resolve_habit_text_source_path(habit)
@@ -232,7 +259,7 @@ def materialize_trigger_habit_text(item):
         habit[HABIT_TEXT_MAX_WORD_COUNT_FIELD],
     )
     trigger[HABIT_RENDERED_TEXT_FIELD] = transform_habit_text_with_codex(
-        habit[HABIT_TEXT_TRANSFORM_PROMPT_FIELD],
+        transform_prompts[habit[HABIT_TEXT_TRANSFORM_PROMPT_NAME_FIELD]],
         selected_text,
     )
 
