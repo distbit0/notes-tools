@@ -8,7 +8,7 @@
   },
   "openRouter": {
     "responsesUrl": "https://openrouter.ai/api/v1/responses",
-    "model": "minimax/minimax-m2.7",
+    "model": "minimax/minimax-m3",
     "reasoningEffort": "low"
   },
   "infolioArticleRelevance": {
