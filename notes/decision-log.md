@@ -44,6 +44,7 @@
 
 - Sync only active conversations updated since the configured cutoff. The local state records seen message IDs, so deleting an exported Markdown file does not cause old messages to be reconstructed.
 - ChatGPT HTTP requests use `curl` because Cloudflare stalls Node TLS handshakes while accepting the same Brave session through `curl`; secrets are supplied through mode-0600 temporary config files. Python remains limited to local Brave-cookie extraction because equivalent authenticated Python requests were rejected.
+- Derive the ChatGPT request user-agent from the configured Brave executable's current Chromium major. A pinned Chrome 138 identity produced a Cloudflare challenge at `/api/auth/session` while the same cookies and curl transport succeeded with both the running Chrome 155 and installed Chrome 156 identities. A challenge does not establish expired login credentials; do not rotate credentials on that evidence alone.
 
 ## Private regression data stays local
 

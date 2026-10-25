@@ -111,6 +111,7 @@ export class ChatGptClient {
     this.accountId = "";
     this.requestCount = 0;
     this.fetch = options.fetch ?? curlFetch;
+    this.userAgent = options.userAgent ?? readBrowserUserAgent(options.braveExecutable);
   }
 
   async initialize() {
@@ -145,7 +146,7 @@ export class ChatGptClient {
           Accept: "application/json",
           Cookie: cookieHeader,
           Referer: "https://chatgpt.com/",
-          "User-Agent": browserUserAgent(),
+          "User-Agent": this.userAgent,
         },
       },
     );
@@ -227,7 +228,7 @@ export class ChatGptClient {
       "Content-Type": "application/json",
       "Oai-Device-Id": this.deviceId,
       "Oai-Language": "en-US",
-      "User-Agent": browserUserAgent(),
+      "User-Agent": this.userAgent,
     };
     if (this.accountId) headers["chatgpt-account-id"] = this.accountId;
     return headers;
@@ -484,8 +485,19 @@ class CurlResponse {
   }
 }
 
-function browserUserAgent() {
-  return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
+export function readBrowserUserAgent(braveExecutable, run = spawnSync) {
+  if (!braveExecutable) {
+    throw new UserFacingError("The configured Brave executable is required for ChatGPT requests.");
+  }
+  const result = run(braveExecutable, ["--version"], {
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  const version = result.stdout?.match(/^Brave Browser (\d+)\./);
+  if (result.status !== 0 || !version) {
+    throw new UserFacingError("Could not determine the installed Brave version for ChatGPT requests.");
+  }
+  return `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${version[1]}.0.0.0 Safari/537.36`;
 }
 
 function retryAfterToMs(rawValue) {

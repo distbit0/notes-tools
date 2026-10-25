@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   activeRateLimitCooldown,
   ChatGptClient,
+  readBrowserUserAgent,
   seedRateLimitCooldown,
 } from "../chatgpt_backend_client.mjs";
 
@@ -15,6 +16,24 @@ const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const RATE_LIMIT_OBSERVATION = JSON.parse(
   await readFile(path.join(TEST_DIR, "chatgpt_rate_limit_observation.json"), "utf8"),
 );
+const BROWSER_OBSERVATION = JSON.parse(
+  await readFile(path.join(TEST_DIR, "chatgpt_browser_observation.json"), "utf8"),
+);
+
+test("uses the installed Brave major that restored authenticated ChatGPT reads", () => {
+  const userAgent = readBrowserUserAgent("/usr/bin/brave-browser", (command, args) => {
+    assert.equal(command, "/usr/bin/brave-browser");
+    assert.deepEqual(args, ["--version"]);
+    return BROWSER_OBSERVATION.version;
+  });
+  assert.equal(userAgent, BROWSER_OBSERVATION.userAgent);
+  const client = new ChatGptClient({ ...clientOptions(), userAgent });
+  assert.equal(client.backendHeaders("application/json")["User-Agent"], userAgent);
+});
+
+test("missing Brave configuration fails instead of using a stale browser identity", () => {
+  assert.throws(() => readBrowserUserAgent(undefined), /configured Brave executable is required/);
+});
 
 function clientOptions(rateLimitStatePath) {
   return {
@@ -23,6 +42,7 @@ function clientOptions(rateLimitStatePath) {
     jitterMs: 0,
     rateLimitStatePath,
     requestDelayMs: 0,
+    userAgent: BROWSER_OBSERVATION.userAgent,
   };
 }
 
