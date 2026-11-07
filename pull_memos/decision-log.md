@@ -15,6 +15,14 @@
 - The quiet check reads `timestamps.updated`: it is never older than `edited` and never missing. The text-child `ListItem` timestamps are placeholders and cannot date an edit.
 - `authenticate_keep` is the only pull, so it runs after audio. Pulling first left a 102s median and 268s maximum gap between snapshot and commit across a 15-day log, and edits in that gap were trashed unsaved.
 
+## Long recordings
+
+- Every recording goes through one ffmpeg split, whatever its length, because pydub holds decoded audio in memory and the old crop silently discarded everything after 1100 seconds. Cuts are at fixed times: the long recordings examined had almost no silence to cut at, so a word can be lost at a boundary. Chunk transcripts are joined with paragraph breaks, so a sentence can break there too.
+- Chunk transcripts stay in `logs/audio_transcripts/<file hash>/` until the text is saved, because a retry every 3 minutes would otherwise re-bill finished chunks. The processed hash is recorded only after that write; recording it first let a crash trash audio whose text was never saved.
+- Transcripts over `maxInboxTranscriptChars` go to their own `voice-transcript-*.md` note with only a link in the inbox. `inbox-index` is `#share`d to a gist and read whole by agents, and a long recording may hold other people's speech, so no preview goes there either.
+- A rejected API key stops the audio batch, since every remaining file would fail the same way after its own slow split. Audio runs before Keep, so this also stops a bad key from delaying note capture.
+- `gpt-4o-transcribe` shuts down on 2027-02-26; `gpt-transcribe` replaces it. The model was not switched because the key could not test it.
+
 ## Capture routing
 
 - Leading `qq `, `ff `, and URL-only `ii ` markers route to writing ideas, friend ideas, and Infolio respectively before ordinary inbox handling.

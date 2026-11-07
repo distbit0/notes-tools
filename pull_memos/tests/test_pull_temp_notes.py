@@ -1,13 +1,18 @@
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import subprocess
 import time
+from types import SimpleNamespace
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
+import httpx
+import openai
 import pytest
 
 import keep_auth
+from processed_hashes import ProcessedHashes
 import pullTempNotes
 
 KEEP_QUIET_PERIOD_SECONDS = 300
@@ -17,7 +22,7 @@ TRUNCATED_NOTE_SNAPSHOT_AT = datetime.fromisoformat("2026-11-07T09:09:46.394+00:
 
 
 @pytest.fixture(autouse=True)
-def keep_capture_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def isolated_script_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
         pullTempNotes,
         "load_config",
@@ -27,6 +32,14 @@ def keep_capture_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
         pullTempNotes,
         "KEEP_CAPTURE_LEDGER_FILE",
         str(tmp_path / "keep_capture_ledger.json"),
+    )
+    monkeypatch.setattr(
+        pullTempNotes, "AUDIO_TRANSCRIPTS_DIR", str(tmp_path / "audio_transcripts")
+    )
+    monkeypatch.setattr(
+        pullTempNotes,
+        "processed_hashes",
+        ProcessedHashes(str(tmp_path / "audio_hashes.json")),
     )
 
 
@@ -874,3 +887,256 @@ def test_acquire_script_lock_exits_when_another_run_is_active(
         first_lock.close()
 
     assert exit_info.value.code == 0
+
+
+class FakeTranscriptions:
+    def __init__(self, failure: Exception | None = None) -> None:
+        self.failure = failure
+        self.failing_chunks: set[str] = set()
+        self.requested_chunks: list[str] = []
+
+    def create(self, *, model: str, file, response_format: str) -> str:
+        chunk_name = Path(file.name).stem
+        self.requested_chunks.append(chunk_name)
+        if self.failure:
+            raise self.failure
+        if chunk_name in self.failing_chunks:
+            raise RuntimeError("transcription failed")
+        return f"text of {chunk_name}"
+
+
+@pytest.fixture
+def transcriptions(monkeypatch: pytest.MonkeyPatch) -> FakeTranscriptions:
+    fake_transcriptions = FakeTranscriptions()
+    client = SimpleNamespace(audio=SimpleNamespace(transcriptions=fake_transcriptions))
+    monkeypatch.setenv("OPENAI_API_KEY", "unused")
+    monkeypatch.setattr(pullTempNotes, "OpenAI", lambda api_key: client)
+    return fake_transcriptions
+
+
+def record_audio(path: Path, seconds: int) -> str:
+    # Real ffmpeg output, since the recordings themselves are private.
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=220:duration={seconds}",
+            str(path),
+        ],
+        check=True,
+    )
+    return str(path)
+
+
+def audio_seconds(path: Path) -> float:
+    return float(
+        subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=nw=1:nk=1",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    )
+
+
+def test_split_audio_into_chunks_covers_the_whole_recording(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(pullTempNotes, "TRANSCRIPTION_CHUNK_SECONDS", 2)
+    recording = record_audio(tmp_path / "recording.mp3", seconds=5)
+
+    chunk_paths = pullTempNotes.split_audio_into_chunks(recording, tmp_path)
+
+    assert [path.name for path in chunk_paths] == [
+        "chunk-00000.mp3",
+        "chunk-00001.mp3",
+        "chunk-00002.mp3",
+    ]
+    assert sum(audio_seconds(path) for path in chunk_paths) == pytest.approx(5, abs=0.2)
+
+
+def test_process_mp3_file_joins_every_chunk_in_recording_order(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    transcriptions: FakeTranscriptions,
+) -> None:
+    monkeypatch.setattr(pullTempNotes, "TRANSCRIPTION_CHUNK_SECONDS", 2)
+    recording = record_audio(tmp_path / "recording.mp3", seconds=5)
+
+    transcript, was_transcribed = pullTempNotes.processMp3File(
+        recording, tmp_path / "transcripts"
+    )
+
+    assert was_transcribed
+    assert transcript == (
+        "text of chunk-00000\n\ntext of chunk-00001\n\ntext of chunk-00002"
+    )
+
+
+def test_process_mp3_file_retry_only_requests_unfinished_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    transcriptions: FakeTranscriptions,
+) -> None:
+    monkeypatch.setattr(pullTempNotes, "TRANSCRIPTION_CHUNK_SECONDS", 2)
+    recording = record_audio(tmp_path / "recording.mp3", seconds=5)
+    transcriptions.failing_chunks = {"chunk-00001"}
+
+    assert pullTempNotes.processMp3File(recording, tmp_path / "transcripts") == (
+        "",
+        False,
+    )
+
+    transcriptions.failing_chunks = set()
+    transcriptions.requested_chunks = []
+    transcript, was_transcribed = pullTempNotes.processMp3File(
+        recording, tmp_path / "transcripts"
+    )
+
+    assert was_transcribed
+    assert transcriptions.requested_chunks == ["chunk-00001"]
+    assert transcript.count("text of chunk-") == 3
+
+
+def test_process_mp3_file_reports_unreadable_audio_as_failed(
+    tmp_path: Path, transcriptions: FakeTranscriptions
+) -> None:
+    unreadable_recording = tmp_path / "recording.mp3"
+    unreadable_recording.write_text("not audio")
+
+    result = pullTempNotes.processMp3File(
+        str(unreadable_recording), tmp_path / "transcripts"
+    )
+
+    assert result == ("", False)
+    assert transcriptions.requested_chunks == []
+
+
+def test_save_notes_from_mp3s_stops_at_a_rejected_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    transcriptions: FakeTranscriptions,
+) -> None:
+    record_audio(tmp_path / "My recording 1.mp3", seconds=1)
+    record_audio(tmp_path / "My recording 2.mp3", seconds=2)
+    transcriptions.failure = openai.AuthenticationError(
+        "Incorrect API key provided",
+        response=httpx.Response(
+            401, request=httpx.Request("POST", "https://api.openai.com/v1/")
+        ),
+        body=None,
+    )
+    monkeypatch.setattr(
+        pullTempNotes,
+        "load_config",
+        lambda: {"mp3CaptureFolder": str(tmp_path)},
+    )
+
+    text_to_add, processed_mp3s = pullTempNotes.saveNotesFromMp3s()
+
+    assert text_to_add == ""
+    assert processed_mp3s == {}
+    assert len(transcriptions.requested_chunks) == 1
+
+
+@pytest.mark.parametrize(
+    ("max_inbox_chars", "expected_inbox_text"),
+    [
+        (100, "\n\ntext of chunk-00000"),
+        (
+            5,
+            "\n\nvoice transcript: "
+            "[[voice-transcript-2026-09-14-my-recording-224]]",
+        ),
+    ],
+    ids=["short_stays_in_inbox", "long_gets_its_own_note"],
+)
+def test_save_notes_from_mp3s_keeps_long_transcripts_out_of_the_inbox(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    transcriptions: FakeTranscriptions,
+    max_inbox_chars: int,
+    expected_inbox_text: str,
+) -> None:
+    capture_dir = tmp_path / "capture"
+    capture_dir.mkdir()
+    recording = record_audio(capture_dir / "My recording 224.mp3", seconds=1)
+    recorded_at = datetime(2026, 9, 14, 12).timestamp()
+    os.utime(recording, (recorded_at, recorded_at))
+    monkeypatch.setattr(
+        pullTempNotes,
+        "load_config",
+        lambda: {
+            "mp3CaptureFolder": str(capture_dir),
+            "tempNotesPath": str(tmp_path / "inbox-index.md"),
+            "maxInboxTranscriptChars": max_inbox_chars,
+        },
+    )
+
+    text_to_add, _ = pullTempNotes.saveNotesFromMp3s()
+
+    assert text_to_add == expected_inbox_text
+    note_paths = list(tmp_path.glob("voice-transcript-*.md"))
+    if max_inbox_chars == 5:
+        assert [path.read_text() for path in note_paths] == ["text of chunk-00000\n"]
+    else:
+        assert note_paths == []
+
+
+def test_commit_processed_mp3_batch_records_audio_only_after_text_is_saved(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    trashed_paths: list[str] = []
+    monkeypatch.setattr(pullTempNotes, "send2trash", trashed_paths.append)
+    recording = tmp_path / "recording.mp3"
+    recording.write_text("audio")
+    transcript_dir = Path(pullTempNotes.AUDIO_TRANSCRIPTS_DIR) / "recording-hash"
+    transcript_dir.mkdir(parents=True)
+    processed_mp3s = {
+        "recording.mp3": {
+            "raw_text": "text of chunk-00000",
+            "formatted_text": "text of chunk-00000",
+            "transcription_successful": True,
+            "new_hash": "recording-hash",
+        }
+    }
+
+    def fail_write(file_path, text):
+        raise OSError("disk full")
+
+    original_write_to_file = pullTempNotes.writeToFile
+    monkeypatch.setattr(pullTempNotes, "writeToFile", fail_write)
+    with pytest.raises(OSError):
+        pullTempNotes.commit_processed_mp3_batch(
+            "inbox.md", "text", processed_mp3s, str(tmp_path)
+        )
+
+    assert not pullTempNotes.processed_hashes.is_hash_processed("recording-hash")
+    assert transcript_dir.exists()
+    assert recording.exists()
+    assert trashed_paths == []
+
+    monkeypatch.setattr(pullTempNotes, "writeToFile", original_write_to_file)
+    inbox_path = tmp_path / "inbox.md"
+    inbox_path.write_text("# Inbox\n")
+    pullTempNotes.commit_processed_mp3_batch(
+        str(inbox_path), "\n\ntext of chunk-00000", processed_mp3s, str(tmp_path)
+    )
+
+    assert pullTempNotes.processed_hashes.is_hash_processed("recording-hash")
+    assert not transcript_dir.exists()
+    assert len(trashed_paths) == 1

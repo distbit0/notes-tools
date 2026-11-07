@@ -1,17 +1,19 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from loguru import logger
-from pydub.utils import mediainfo
 import fcntl
 import os
 import re
 import glob
 import datetime
 import time
-from openai import OpenAI
+from openai import AuthenticationError, OpenAI
 import hashlib
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from urllib.parse import unquote_plus, urlsplit, urlunsplit
 from dotenv import load_dotenv
@@ -58,6 +60,10 @@ LOG_FILE = os.path.join(LOG_DIR, "pullTempNotes.log")
 LOCK_FILE = os.path.join(LOG_DIR, "pullTempNotes.lock")
 KEEP_URL_RETRY_COUNTS_FILE = os.path.join(LOG_DIR, "keep_url_retry_counts.json")
 KEEP_CAPTURE_LEDGER_FILE = os.path.join(LOG_DIR, "keep_capture_ledger.json")
+AUDIO_TRANSCRIPTS_DIR = os.path.join(LOG_DIR, "audio_transcripts")
+# Known to fit one gpt-4o-transcribe request; OpenAI only publishes the 25 MB limit.
+TRANSCRIPTION_CHUNK_SECONDS = 1100
+TRANSCRIPTION_WORKERS = 20
 MAX_KEEP_URL_CONVERSION_ATTEMPTS = 3
 
 
@@ -475,51 +481,73 @@ def tryDeleteFile(path, fileText):
         logger.exception(f"Failed moving {newFilePath} to trash: {error}")
 
 
-def processMp3File(mp3FileName):
-    # Get the duration of the audio file
-    info = mediainfo(mp3FileName)
+def split_audio_into_chunks(audio_path, chunk_dir):
+    # Speech-grade mono keeps every chunk far below the 25 MB upload limit.
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-i",
+            audio_path,
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-b:a",
+            "64k",
+            "-f",
+            "segment",
+            "-segment_time",
+            str(TRANSCRIPTION_CHUNK_SECONDS),
+            "-reset_timestamps",
+            "1",
+            str(Path(chunk_dir) / "chunk-%05d.mp3"),
+        ],
+        check=True,
+    )
+    return sorted(Path(chunk_dir).glob("chunk-*.mp3"))
 
-    if "duration" not in info:
-        logger.error(f"Could not determine duration for {mp3FileName}")
-        return "DURATION UNKNOWN", False
 
-    duration = float(info["duration"])
-    temp_file = None
-    if duration > 1100:
-        logger.info(f"Cropping {mp3FileName} to 1100 seconds")
-        from pydub import AudioSegment
+def transcribe_audio_chunk(client, chunk_path, transcript_path):
+    if transcript_path.exists():
+        return transcript_path.read_text()
+    with open(chunk_path, "rb") as audio_file:
+        transcript = client.audio.transcriptions.create(
+            model="gpt-4o-transcribe",
+            file=audio_file,
+            response_format="text",
+        )
+    transcript_path.write_text(transcript)
+    return transcript
 
-        audio = AudioSegment.from_file(mp3FileName)
-        audio = audio[: 1100 * 1000]  # pydub works in milliseconds
-        temp_file = mp3FileName + ".temp.mp3"
-        audio.export(temp_file, format="mp3")
-        mp3FileName = temp_file
 
+def processMp3File(mp3FileName, transcript_dir):
     try:
-        apiKey = os.environ["OPENAI_API_KEY"]
-        client = OpenAI(api_key=apiKey)
-        with open(mp3FileName, "rb") as audio_file:
-            api_response = client.audio.transcriptions.create(
-                model="gpt-4o-transcribe",
-                file=audio_file,
-                response_format="text",
-            )
-        transcribed_text = api_response
-        success = True
-        logger.info(f"Transcription completed for {mp3FileName}")
+        client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+        transcript_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory() as chunk_dir:
+            chunk_paths = split_audio_into_chunks(mp3FileName, chunk_dir)
+            logger.info(f"Transcribing {len(chunk_paths)} chunks of {mp3FileName}")
+            with ThreadPoolExecutor(TRANSCRIPTION_WORKERS) as executor:
+                chunk_transcripts = list(
+                    executor.map(
+                        lambda chunk_path: transcribe_audio_chunk(
+                            client, chunk_path, transcript_dir / f"{chunk_path.stem}.txt"
+                        ),
+                        chunk_paths,
+                    )
+                )
+    except AuthenticationError:
+        raise
     except Exception as error:
-        transcribed_text = f"transcription api error {time.time()}"
-        success = False
         logger.exception(f"Transcription failed for {mp3FileName}: {error}")
+        return "", False
 
-    if temp_file:
-        try:
-            os.remove(temp_file)
-            logger.debug(f"Removed temporary audio file {temp_file}")
-        except Exception as error:
-            logger.exception(f"Error removing temporary file {temp_file}: {error}")
-
-    return transcribed_text, success
+    logger.info(f"Transcription completed for {mp3FileName}")
+    return "\n\n".join(chunk_transcripts), True
 
 
 def sort_key(filename):
@@ -529,8 +557,24 @@ def sort_key(filename):
     return 0
 
 
+def transcript_inbox_text(transcript, mp3File, config):
+    if len(transcript) <= config["maxInboxTranscriptChars"]:
+        return transcript
+
+    # The inbox is shared to a gist and read whole by agents, and a long recording
+    # may hold other people's speech, so only a link goes there.
+    recording_date = datetime.date.fromtimestamp(os.path.getmtime(mp3File)).isoformat()
+    recording_name = "-".join(Path(mp3File).stem.lower().split())
+    note_path = Path(config["tempNotesPath"]).with_name(
+        f"voice-transcript-{recording_date}-{recording_name}.md"
+    )
+    note_path.write_text(transcript + "\n")
+    return f"voice transcript: [[{note_path.stem}]]"
+
+
 def saveNotesFromMp3s():
-    mp3FolderPath = load_config()["mp3CaptureFolder"]
+    config = load_config()
+    mp3FolderPath = config["mp3CaptureFolder"]
     textToAddToFile = ""
     processedMp3s = {}
 
@@ -549,26 +593,27 @@ def saveNotesFromMp3s():
                 "raw_text": "ALREADY PROCESSED",
                 "formatted_text": "ALREADY PROCESSED",
                 "transcription_successful": True,
+                "new_hash": None,
             }
             continue
 
         logger.info(f"Processing {fileName}")
-        raw_text, transcription_successful = processMp3File(mp3File)
+        try:
+            raw_text, transcription_successful = processMp3File(
+                mp3File, Path(AUDIO_TRANSCRIPTS_DIR) / file_hash
+            )
+        except AuthenticationError as error:
+            # Every remaining file would fail the same way after its own slow split.
+            logger.error(f"OpenAI rejected the API key; leaving audio to retry: {error}")
+            break
         formatted_text = formatIncomingText(raw_text, True) if raw_text else ""
 
         if transcription_successful:
             if formatted_text:
-                textToAddToFile += "\n\n" + formatted_text
+                textToAddToFile += "\n\n" + transcript_inbox_text(
+                    formatted_text, mp3File, config
+                )
                 logger.debug(f"Transcription output for {fileName}: {formatted_text}")
-
-            # Record the processed file hash
-            processed_hashes.add_hash(
-                file_hash,
-                {
-                    "filename": fileName,
-                    "processed_date": str(datetime.datetime.now()),
-                },
-            )
         else:
             logger.info(
                 f"Transcription failed for {fileName}; leaving file in source folder for retry"
@@ -578,6 +623,7 @@ def saveNotesFromMp3s():
             "raw_text": raw_text,
             "formatted_text": formatted_text,
             "transcription_successful": transcription_successful,
+            "new_hash": file_hash if transcription_successful else None,
         }
 
     return textToAddToFile, processedMp3s
@@ -693,6 +739,20 @@ def sync_keep_notes(
     trash_settled_keep_notes(keep, capture_ledger)
 
 
+def record_processed_mp3s(processed_mp3s):
+    for mp3File, mp3Outcome in processed_mp3s.items():
+        if not mp3Outcome["new_hash"]:
+            continue
+        processed_hashes.add_hash(
+            mp3Outcome["new_hash"],
+            {
+                "filename": mp3File,
+                "processed_date": str(datetime.datetime.now()),
+            },
+        )
+        shutil.rmtree(Path(AUDIO_TRANSCRIPTS_DIR) / mp3Outcome["new_hash"])
+
+
 def delete_processed_mp3s(processed_mp3s, mp3_folder_path):
     for mp3File, mp3Outcome in processed_mp3s.items():
         if not mp3Outcome["transcription_successful"]:
@@ -714,8 +774,10 @@ def commit_processed_mp3_batch(
     temp_file_path, text_to_add_to_file, processed_mp3s, mp3_folder_path
 ):
     # Keep the temp-note write and source-file trashing adjacent so the capture
-    # folder reflects only audio that has not landed in temp notes yet.
+    # folder reflects only audio that has not landed in temp notes yet. A hash
+    # recorded before the write would get unsaved audio trashed after a crash.
     writeToFile(temp_file_path, text_to_add_to_file)
+    record_processed_mp3s(processed_mp3s)
     delete_processed_mp3s(processed_mp3s, mp3_folder_path)
 
 
