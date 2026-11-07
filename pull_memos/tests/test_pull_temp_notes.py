@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 import subprocess
 import time
@@ -7,6 +8,20 @@ import pytest
 
 import keep_auth
 import pullTempNotes
+
+KEEP_QUIET_PERIOD_SECONDS = 300
+# Timing of the November 7 note that was saved mid-sentence.
+TRUNCATED_NOTE_CREATED_AT = datetime.fromisoformat("2026-11-07T09:08:00.903+00:00")
+TRUNCATED_NOTE_SNAPSHOT_AT = datetime.fromisoformat("2026-11-07T09:09:46.394+00:00")
+
+
+@pytest.fixture(autouse=True)
+def keep_quiet_period(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        pullTempNotes,
+        "load_config",
+        lambda: {"keepNoteQuietPeriodSeconds": KEEP_QUIET_PERIOD_SECONDS},
+    )
 
 
 def test_opened_url_history_excludes_statement_credentials(tmp_path: Path) -> None:
@@ -53,12 +68,16 @@ class FakeKeep:
 
 
 class FakeTimestamp:
-    def timestamp(self) -> int:
-        return 0
+    def __init__(self, seconds: float = 0) -> None:
+        self.seconds = seconds
+
+    def timestamp(self) -> float:
+        return self.seconds
 
 
 class FakeTimestamps:
     edited = FakeTimestamp()
+    updated = FakeTimestamp()
 
 
 class FakeKeepNote:
@@ -317,9 +336,9 @@ def test_main_commits_processed_mp3s_before_keep_url_sync(
     pullTempNotes.main()
 
     assert events == [
-        "auth",
         "dedupe",
         "commit_mp3",
+        "auth",
         "sync_keep_notes",
         "lock_close",
     ]
@@ -400,6 +419,40 @@ def test_sync_keep_notes_writes_raw_text_after_third_lineate_failure(
     assert temp_notes_path.read_text() == "existing\n\nhttps://example.com\n"
     assert retry_counts_path.read_text().strip() == "{}"
     assert events == ["trash", "sync"]
+
+
+@pytest.mark.parametrize("note_text", ["note still being typed", ""])
+def test_build_keep_sync_plan_leaves_recently_updated_note_in_keep(
+    monkeypatch: pytest.MonkeyPatch, note_text: str
+) -> None:
+    note = FakeKeepNote(note_text)
+    note.timestamps.updated = FakeTimestamp(TRUNCATED_NOTE_CREATED_AT.timestamp())
+    keep = type("Keep", (), {"find": lambda self, **kwargs: [note]})()
+    monkeypatch.setattr(
+        pullTempNotes.time, "time", TRUNCATED_NOTE_SNAPSHOT_AT.timestamp
+    )
+
+    keep_plan = pullTempNotes.build_keep_sync_plan(keep)
+
+    assert keep_plan.temp_text == ""
+    assert keep_plan.notes_to_trash == []
+
+
+def test_build_keep_sync_plan_captures_note_after_quiet_period(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    note = FakeKeepNote("finished note")
+    last_update = TRUNCATED_NOTE_CREATED_AT.timestamp()
+    note.timestamps.updated = FakeTimestamp(last_update)
+    keep = type("Keep", (), {"find": lambda self, **kwargs: [note]})()
+    monkeypatch.setattr(
+        pullTempNotes.time, "time", lambda: last_update + KEEP_QUIET_PERIOD_SECONDS
+    )
+
+    keep_plan = pullTempNotes.build_keep_sync_plan(keep)
+
+    assert keep_plan.temp_text.strip() == "finished note"
+    assert keep_plan.notes_to_trash == [note]
 
 
 def test_build_keep_sync_plan_routes_ii_url_only_notes_to_infolio() -> None:

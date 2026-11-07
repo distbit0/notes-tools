@@ -260,8 +260,16 @@ def build_keep_sync_plan(keep):
     url_actions = []
     notes_to_trash = []
     url_pattern = re.compile(r"https?://\S+")
+    quiet_period_seconds = load_config()["keepNoteQuietPeriodSeconds"]
 
     for gnote in gnotes:
+        seconds_since_update = time.time() - gnote.timestamps.updated.timestamp()
+        if seconds_since_update < quiet_period_seconds:
+            # Keep uploads a note as it is typed, and trashing it strands what follows.
+            logger.info(
+                f"Deferring Keep note {gnote.id}: updated {seconds_since_update:.0f}s ago"
+            )
+            continue
         isWatchNote = gnote.title in ["Questions", "Statements", "Notes"]
         isEmpty = (gnote.text + gnote.title).strip() == ""
         if isEmpty:
@@ -663,9 +671,6 @@ def commit_processed_mp3_batch(
 def main():
     lock_handle = acquire_script_lock()
     try:
-        logger.info("Authenticating with Google Keep")
-        keep = authenticate_keep()
-        logger.info("Authenticated with Google Keep")
         config = load_config()
         tempFilePath, writingFilePath, mp3FolderPath = (
             config["tempNotesPath"],
@@ -680,6 +685,11 @@ def main():
             tempFilePath, textToAddToFile, processedMp3s, mp3FolderPath
         )
 
+        # Authenticating is the only Keep pull. Audio can take minutes, so pulling
+        # before it would save and trash notes from a snapshot older than their edits.
+        logger.info("Authenticating with Google Keep")
+        keep = authenticate_keep()
+        logger.info("Authenticated with Google Keep")
         sync_keep_notes(
             keep,
             tempFilePath,
