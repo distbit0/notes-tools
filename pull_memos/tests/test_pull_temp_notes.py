@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 from pathlib import Path
 import subprocess
 import time
@@ -16,11 +17,33 @@ TRUNCATED_NOTE_SNAPSHOT_AT = datetime.fromisoformat("2026-11-07T09:09:46.394+00:
 
 
 @pytest.fixture(autouse=True)
-def keep_quiet_period(monkeypatch: pytest.MonkeyPatch) -> None:
+def keep_capture_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
         pullTempNotes,
         "load_config",
         lambda: {"keepNoteQuietPeriodSeconds": KEEP_QUIET_PERIOD_SECONDS},
+    )
+    monkeypatch.setattr(
+        pullTempNotes,
+        "KEEP_CAPTURE_LEDGER_FILE",
+        str(tmp_path / "keep_capture_ledger.json"),
+    )
+
+
+@pytest.fixture
+def notes_dir(tmp_path: Path) -> Path:
+    for file_name in ("temp.md", "writing.md", "friends.md"):
+        (tmp_path / file_name).write_text("# Notes\n")
+    return tmp_path
+
+
+def run_keep_sync(keep: "FakeKeep", notes_dir: Path) -> None:
+    pullTempNotes.sync_keep_notes(
+        keep,
+        str(notes_dir / "temp.md"),
+        str(notes_dir / "writing.md"),
+        str(notes_dir / "friends.md"),
+        str(notes_dir / "urls.md"),
     )
 
 
@@ -50,21 +73,21 @@ def test_history_preserves_urls_without_credentials() -> None:
         assert pullTempNotes.url_for_history(resource_url) == resource_url
 
 
-class FakeNote:
-    def __init__(self, events: list[str], trash_event: str = "trash") -> None:
-        self.events = events
-        self.trash_event = trash_event
-
-    def trash(self) -> None:
-        self.events.append(self.trash_event)
-
-
 class FakeKeep:
-    def __init__(self, events: list[str]) -> None:
+    def __init__(
+        self, events: list[str], notes: list["FakeKeepNote"] | None = None
+    ) -> None:
         self.events = events
+        self.notes = notes or []
 
     def sync(self) -> None:
         self.events.append("sync")
+
+    def find(self, **kwargs) -> list["FakeKeepNote"]:
+        return [note for note in self.notes if not note.trashed]
+
+    def get(self, note_id: str) -> "FakeKeepNote | None":
+        return next((note for note in self.notes if note.id == note_id), None)
 
 
 class FakeTimestamp:
@@ -94,8 +117,10 @@ class FakeKeepNote:
         self.id = note_id
         self.events = events
         self.timestamps = FakeTimestamps()
+        self.trashed = False
 
     def trash(self) -> None:
+        self.trashed = True
         if self.events is not None:
             self.events.append("trash")
 
@@ -106,14 +131,14 @@ def keep_sync_plan(
     writing_text: str = "",
     friends_text: str = "",
     url_actions: list[pullTempNotes.KeepUrlAction] | None = None,
-    notes_to_trash: list[object] | None = None,
+    saved_texts: dict[str, str] | None = None,
 ) -> pullTempNotes.KeepSyncPlan:
     return pullTempNotes.KeepSyncPlan(
         temp_text=temp_text,
         writing_text=writing_text,
         friends_text=friends_text,
         url_actions=url_actions or [],
-        notes_to_trash=notes_to_trash or [],
+        saved_texts=saved_texts or {},
     )
 
 
@@ -121,9 +146,9 @@ def test_sync_keep_notes_commits_plain_keep_text_before_url_side_effects(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     events: list[str] = []
-    plain_keep_note = FakeNote(events, "plain_trash")
-    url_note = FakeNote(events, "url_trash")
-    keep = FakeKeep(events)
+    plain_keep_note = FakeKeepNote("keep text", note_id="plain", events=events)
+    url_note = FakeKeepNote("https://example.com", note_id="url", events=events)
+    keep = FakeKeep(events, [plain_keep_note, url_note])
     temp_notes_path = tmp_path / "temp.md"
     writing_notes_path = tmp_path / "writing.md"
     temp_notes_path.write_text("existing\n")
@@ -132,7 +157,7 @@ def test_sync_keep_notes_commits_plain_keep_text_before_url_side_effects(
     monkeypatch.setattr(
         pullTempNotes,
         "build_keep_sync_plan",
-        lambda keep_arg: keep_sync_plan(
+        lambda keep_arg, capture_ledger: keep_sync_plan(
             temp_text="\nkeep text",
             url_actions=[
                 pullTempNotes.KeepUrlAction(
@@ -142,7 +167,7 @@ def test_sync_keep_notes_commits_plain_keep_text_before_url_side_effects(
                     lineate_urls=["https://example.com"],
                 )
             ],
-            notes_to_trash=[plain_keep_note],
+            saved_texts={"plain": "keep text"},
         ),
     )
     monkeypatch.setattr(
@@ -159,7 +184,8 @@ def test_sync_keep_notes_commits_plain_keep_text_before_url_side_effects(
     original_write_to_file = pullTempNotes.writeToFile
 
     def track_write(file_path, text):
-        events.append("write")
+        if text:
+            events.append("write")
         original_write_to_file(file_path, text)
 
     monkeypatch.setattr(pullTempNotes, "writeToFile", track_write)
@@ -173,16 +199,17 @@ def test_sync_keep_notes_commits_plain_keep_text_before_url_side_effects(
             str(tmp_path / "urls.md"),
         )
 
-    assert events == ["write", "plain_trash", "sync", "lineate", "append"]
+    assert events == ["write", "lineate", "append"]
     assert temp_notes_path.read_text() == "existing\nkeep text\n"
+    assert pullTempNotes.load_keep_capture_ledger() == {"plain": "keep text"}
 
 
 def test_sync_keep_notes_orders_commit_steps(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     events: list[str] = []
-    note = FakeNote(events)
-    keep = FakeKeep(events)
+    note = FakeKeepNote("https://example.com", note_id="keep-note-1", events=events)
+    keep = FakeKeep(events, [note])
     temp_notes_path = tmp_path / "temp.md"
     writing_notes_path = tmp_path / "writing.md"
     temp_notes_path.write_text("existing\n")
@@ -191,7 +218,7 @@ def test_sync_keep_notes_orders_commit_steps(
     monkeypatch.setattr(
         pullTempNotes,
         "build_keep_sync_plan",
-        lambda keep_arg: keep_sync_plan(
+        lambda keep_arg, capture_ledger: keep_sync_plan(
             url_actions=[
                 pullTempNotes.KeepUrlAction(
                     note=note,
@@ -216,7 +243,8 @@ def test_sync_keep_notes_orders_commit_steps(
     original_write_to_file = pullTempNotes.writeToFile
 
     def track_write(file_path, text):
-        events.append("write")
+        if text:
+            events.append("write")
         original_write_to_file(file_path, text)
 
     monkeypatch.setattr(pullTempNotes, "writeToFile", track_write)
@@ -237,8 +265,8 @@ def test_sync_keep_notes_does_not_apply_keep_timeout_to_lineate(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     events: list[str] = []
-    note = FakeNote(events)
-    keep = FakeKeep(events)
+    note = FakeKeepNote("https://example.com", note_id="keep-note-1", events=events)
+    keep = FakeKeep(events, [note])
     temp_notes_path = tmp_path / "temp.md"
     writing_notes_path = tmp_path / "writing.md"
     temp_notes_path.write_text("existing\n")
@@ -248,7 +276,7 @@ def test_sync_keep_notes_does_not_apply_keep_timeout_to_lineate(
     monkeypatch.setattr(
         pullTempNotes,
         "build_keep_sync_plan",
-        lambda keep_arg: keep_sync_plan(
+        lambda keep_arg, capture_ledger: keep_sync_plan(
             url_actions=[
                 pullTempNotes.KeepUrlAction(
                     note=note,
@@ -353,7 +381,7 @@ def test_sync_keep_notes_writes_raw_text_after_third_lineate_failure(
         note_id="keep-note-1",
         events=events,
     )
-    keep = FakeKeep(events)
+    keep = FakeKeep(events, [note])
     temp_notes_path = tmp_path / "temp.md"
     writing_notes_path = tmp_path / "writing.md"
     temp_notes_path.write_text("existing\n")
@@ -368,7 +396,7 @@ def test_sync_keep_notes_writes_raw_text_after_third_lineate_failure(
     monkeypatch.setattr(
         pullTempNotes,
         "build_keep_sync_plan",
-        lambda keep_arg: keep_sync_plan(
+        lambda keep_arg, capture_ledger: keep_sync_plan(
             url_actions=[
                 pullTempNotes.KeepUrlAction(
                     note=note,
@@ -421,45 +449,158 @@ def test_sync_keep_notes_writes_raw_text_after_third_lineate_failure(
     assert events == ["trash", "sync"]
 
 
-@pytest.mark.parametrize("note_text", ["note still being typed", ""])
-def test_build_keep_sync_plan_leaves_recently_updated_note_in_keep(
-    monkeypatch: pytest.MonkeyPatch, note_text: str
+def test_sync_keep_notes_saves_new_note_at_once_and_only_once(
+    monkeypatch: pytest.MonkeyPatch, notes_dir: Path
 ) -> None:
-    note = FakeKeepNote(note_text)
+    events: list[str] = []
+    note = FakeKeepNote("draft one", note_id="keep-note-1", events=events)
     note.timestamps.updated = FakeTimestamp(TRUNCATED_NOTE_CREATED_AT.timestamp())
-    keep = type("Keep", (), {"find": lambda self, **kwargs: [note]})()
+    keep = FakeKeep(events, [note])
     monkeypatch.setattr(
         pullTempNotes.time, "time", TRUNCATED_NOTE_SNAPSHOT_AT.timestamp
     )
 
-    keep_plan = pullTempNotes.build_keep_sync_plan(keep)
+    temp_notes_path = notes_dir / "temp.md"
+    run_keep_sync(keep, notes_dir)
+    assert temp_notes_path.read_text() == "# Notes\n\ndraft one\n"
 
-    assert keep_plan.temp_text == ""
-    assert keep_plan.notes_to_trash == []
+    # Triaging the note out of the file must not bring it back on the next run.
+    temp_notes_path.write_text("# Notes\n")
+    run_keep_sync(keep, notes_dir)
+
+    assert temp_notes_path.read_text() == "# Notes\n"
+    assert events == []
 
 
-def test_build_keep_sync_plan_captures_note_after_quiet_period(
-    monkeypatch: pytest.MonkeyPatch,
+# Keep kept the edit and the trash in the first case, and a client that had not
+# seen the trash untrashed the note in the second. Both were observed on real notes.
+@pytest.mark.parametrize(
+    "note_is_trashed", [True, False], ids=["still_trashed", "untrashed_by_edit"]
+)
+def test_sync_keep_notes_replaces_saved_text_with_later_edit_in_place(
+    notes_dir: Path, note_is_trashed: bool
 ) -> None:
-    note = FakeKeepNote("finished note")
-    last_update = TRUNCATED_NOTE_CREATED_AT.timestamp()
-    note.timestamps.updated = FakeTimestamp(last_update)
-    keep = type("Keep", (), {"find": lambda self, **kwargs: [note]})()
-    monkeypatch.setattr(
-        pullTempNotes.time, "time", lambda: last_update + KEEP_QUIET_PERIOD_SECONDS
+    note = FakeKeepNote("draft one", note_id="keep-note-1")
+    keep = FakeKeep([], [note])
+    run_keep_sync(keep, notes_dir)
+    temp_notes_path = notes_dir / "temp.md"
+    temp_notes_path.write_text(temp_notes_path.read_text() + "\nlater note\n")
+
+    note.trashed = note_is_trashed
+    note.text = "edit from client that knows it is trashed"
+    run_keep_sync(keep, notes_dir)
+
+    assert temp_notes_path.read_text() == (
+        "# Notes\n\nedit from client that knows it is trashed\n\nlater note\n"
+    )
+    assert pullTempNotes.load_keep_capture_ledger() == {
+        "keep-note-1": "edit from client that knows it is trashed"
+    }
+
+
+def test_sync_keep_notes_appends_edit_when_saved_text_has_left_the_file(
+    notes_dir: Path,
+) -> None:
+    note = FakeKeepNote("draft one", note_id="keep-note-1")
+    keep = FakeKeep([], [note])
+    run_keep_sync(keep, notes_dir)
+    temp_notes_path = notes_dir / "temp.md"
+    temp_notes_path.write_text("# Notes\n\ntriaged\n")
+
+    note.text = "edit landed before trash"
+    run_keep_sync(keep, notes_dir)
+
+    assert temp_notes_path.read_text() == (
+        "# Notes\n\ntriaged\n\nedit landed before trash\n"
     )
 
-    keep_plan = pullTempNotes.build_keep_sync_plan(keep)
 
-    assert keep_plan.temp_text.strip() == "finished note"
-    assert keep_plan.notes_to_trash == [note]
+def test_replace_saved_keep_text_only_matches_whole_lines(tmp_path: Path) -> None:
+    notes_path = tmp_path / "temp.md"
+    notes_path.write_text("a draft one follows\ndraft one\nsecond line\n")
+
+    was_replaced = pullTempNotes.replace_saved_keep_text(
+        notes_path, "draft one\nsecond line", "edit landed before trash"
+    )
+
+    assert was_replaced
+    assert notes_path.read_text() == "a draft one follows\nedit landed before trash\n"
+    assert not pullTempNotes.replace_saved_keep_text(notes_path, "draft", "unused")
+
+
+def test_sync_keep_notes_keeps_saved_text_when_note_is_blanked(notes_dir: Path) -> None:
+    note = FakeKeepNote("draft one", note_id="keep-note-1")
+    keep = FakeKeep([], [note])
+    run_keep_sync(keep, notes_dir)
+
+    note.text = ""
+    run_keep_sync(keep, notes_dir)
+
+    assert (notes_dir / "temp.md").read_text() == "# Notes\n\ndraft one\n"
+
+
+def test_sync_keep_notes_forgets_note_keep_has_purged(notes_dir: Path) -> None:
+    pullTempNotes.save_keep_capture_ledger({"purged-note": "draft one"})
+
+    run_keep_sync(FakeKeep([]), notes_dir)
+
+    assert pullTempNotes.load_keep_capture_ledger() == {}
+    assert (notes_dir / "temp.md").read_text() == "# Notes\n"
+
+
+def test_sync_keep_notes_appends_url_note_edit_without_rerunning_lineate(
+    monkeypatch: pytest.MonkeyPatch, notes_dir: Path
+) -> None:
+    lineate_calls: list[list[str]] = []
+    note = FakeKeepNote("https://example.com", note_id="keep-note-1")
+    keep = FakeKeep([], [note])
+    monkeypatch.setattr(
+        pullTempNotes,
+        "run_lineate_for_urls",
+        lambda urls, output_dest="browser": lineate_calls.append(urls),
+    )
+    monkeypatch.setattr(pullTempNotes, "append_opened_urls", lambda urls, path: None)
+
+    run_keep_sync(keep, notes_dir)
+    note.text = "https://example.com worth reading"
+    run_keep_sync(keep, notes_dir)
+
+    assert lineate_calls == [["https://example.com"]]
+    assert (notes_dir / "temp.md").read_text() == (
+        "# Notes\n\nhttps://example.com worth reading\n"
+    )
+
+
+@pytest.mark.parametrize("note_text", ["draft one", ""], ids=["saved", "blank"])
+@pytest.mark.parametrize(
+    ("seconds_since_update", "should_trash"),
+    [(KEEP_QUIET_PERIOD_SECONDS - 1, False), (KEEP_QUIET_PERIOD_SECONDS, True)],
+    ids=["active", "quiet"],
+)
+def test_sync_keep_notes_trashes_notes_only_after_quiet_period(
+    monkeypatch: pytest.MonkeyPatch,
+    notes_dir: Path,
+    note_text: str,
+    seconds_since_update: int,
+    should_trash: bool,
+) -> None:
+    note = FakeKeepNote(note_text, note_id="keep-note-1")
+    last_update = TRUNCATED_NOTE_CREATED_AT.timestamp()
+    note.timestamps.updated = FakeTimestamp(last_update)
+    monkeypatch.setattr(
+        pullTempNotes.time, "time", lambda: last_update + seconds_since_update
+    )
+
+    run_keep_sync(FakeKeep([], [note]), notes_dir)
+
+    assert note.trashed is should_trash
 
 
 def test_build_keep_sync_plan_routes_ii_url_only_notes_to_infolio() -> None:
     note = FakeKeepNote("ii https://example.com\nhttps://slack.com/example")
     keep = type("Keep", (), {"find": lambda self, **kwargs: [note]})()
 
-    keep_plan = pullTempNotes.build_keep_sync_plan(keep)
+    keep_plan = pullTempNotes.build_keep_sync_plan(keep, {})
 
     assert keep_plan.temp_text == ""
     assert keep_plan.writing_text == ""
@@ -470,32 +611,34 @@ def test_build_keep_sync_plan_routes_ii_url_only_notes_to_infolio() -> None:
         "https://slack.com/example",
     ]
     assert keep_plan.url_actions[0].output_dest == "infolio"
-    assert keep_plan.notes_to_trash == []
+    assert keep_plan.saved_texts == {}
 
 
 def test_build_keep_sync_plan_keeps_mixed_ii_notes_in_markdown() -> None:
-    note = FakeKeepNote("ii remember https://example.com")
+    note = FakeKeepNote("ii remember https://example.com", note_id="keep-note-1")
     keep = type("Keep", (), {"find": lambda self, **kwargs: [note]})()
 
-    keep_plan = pullTempNotes.build_keep_sync_plan(keep)
+    keep_plan = pullTempNotes.build_keep_sync_plan(keep, {})
 
     assert "ii remember https://example.com" in keep_plan.temp_text
     assert keep_plan.writing_text == ""
     assert keep_plan.friends_text == ""
     assert keep_plan.url_actions == []
-    assert keep_plan.notes_to_trash == [note]
+    assert keep_plan.saved_texts == {"keep-note-1": "ii remember https://example.com"}
 
 
 def test_build_keep_sync_plan_routes_ff_prefix_to_friends_index() -> None:
-    title_note = FakeKeepNote("body detail", "ff friend note")
-    body_note = FakeKeepNote("ff remember this\nwith detail", "Context")
+    title_note = FakeKeepNote("body detail", "ff friend note", note_id="title")
+    body_note = FakeKeepNote(
+        "ff remember this\nwith detail", "Context", note_id="body"
+    )
     keep = type(
         "Keep",
         (),
         {"find": lambda self, **kwargs: [title_note, body_note]},
     )()
 
-    keep_plan = pullTempNotes.build_keep_sync_plan(keep)
+    keep_plan = pullTempNotes.build_keep_sync_plan(keep, {})
 
     assert keep_plan.temp_text == ""
     assert keep_plan.writing_text == ""
@@ -503,31 +646,35 @@ def test_build_keep_sync_plan_routes_ff_prefix_to_friends_index() -> None:
         "\n\nfriend note\nbody detail\n\nContext\nremember this\nwith detail"
     )
     assert keep_plan.url_actions == []
-    assert keep_plan.notes_to_trash == [title_note, body_note]
+    assert keep_plan.saved_texts == {
+        "title": "friend note\nbody detail",
+        "body": "Context\nremember this\nwith detail",
+    }
 
 
 def test_build_keep_sync_plan_skips_text_fragment_url_lines() -> None:
     note = FakeKeepNote(
-        "https://example.com/page#:~:text=skip%20me\nkeep this line\nhttp://ok.example"
+        "https://example.com/page#:~:text=skip%20me\nkeep this line\nhttp://ok.example",
+        note_id="keep-note-1",
     )
     keep = type("Keep", (), {"find": lambda self, **kwargs: [note]})()
 
-    keep_plan = pullTempNotes.build_keep_sync_plan(keep)
+    keep_plan = pullTempNotes.build_keep_sync_plan(keep, {})
 
     assert "#:~:text=" not in keep_plan.temp_text
     assert "keep this line" in keep_plan.temp_text
     assert "http://ok.example" in keep_plan.temp_text
     assert keep_plan.writing_text == ""
     assert keep_plan.url_actions == []
-    assert keep_plan.notes_to_trash == [note]
+    assert keep_plan.saved_texts == {"keep-note-1": "keep this line\nhttp://ok.example"}
 
 
 def test_sync_keep_notes_sends_infolio_actions_to_lineate_without_opened_url_log(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     events: list[tuple[str, object]] = []
-    note = FakeNote([])
-    keep = FakeKeep([])
+    note = FakeKeepNote("ii https://example.com", note_id="keep-note-1")
+    keep = FakeKeep([], [note])
     temp_notes_path = tmp_path / "temp.md"
     writing_notes_path = tmp_path / "writing.md"
     temp_notes_path.write_text("existing\n")
@@ -536,7 +683,7 @@ def test_sync_keep_notes_sends_infolio_actions_to_lineate_without_opened_url_log
     monkeypatch.setattr(
         pullTempNotes,
         "build_keep_sync_plan",
-        lambda keep_arg: keep_sync_plan(
+        lambda keep_arg, capture_ledger: keep_sync_plan(
             url_actions=[
                 pullTempNotes.KeepUrlAction(
                     note=note,
@@ -601,16 +748,18 @@ def test_run_lineate_for_urls_passes_output_dest_to_lineate(
 
 
 def test_build_keep_sync_plan_routes_qq_prefix_to_writing_index() -> None:
-    title_note = FakeKeepNote("body detail", "qq title question")
-    body_note = FakeKeepNote("qq should this be drafted?\nwith detail", "Context")
-    url_note = FakeKeepNote("qq https://example.com")
+    title_note = FakeKeepNote("body detail", "qq title question", note_id="title")
+    body_note = FakeKeepNote(
+        "qq should this be drafted?\nwith detail", "Context", note_id="body"
+    )
+    url_note = FakeKeepNote("qq https://example.com", note_id="url")
     keep = type(
         "Keep",
         (),
         {"find": lambda self, **kwargs: [title_note, body_note, url_note]},
     )()
 
-    keep_plan = pullTempNotes.build_keep_sync_plan(keep)
+    keep_plan = pullTempNotes.build_keep_sync_plan(keep, {})
 
     assert keep_plan.temp_text == ""
     assert keep_plan.writing_text == (
@@ -620,28 +769,32 @@ def test_build_keep_sync_plan_routes_qq_prefix_to_writing_index() -> None:
     )
     assert keep_plan.friends_text == ""
     assert keep_plan.url_actions == []
-    assert keep_plan.notes_to_trash == [title_note, body_note, url_note]
+    assert keep_plan.saved_texts == {
+        "title": "title question\nbody detail",
+        "body": "Context\nshould this be drafted?\nwith detail",
+        "url": "https://example.com",
+    }
 
 
 def test_build_keep_sync_plan_does_not_route_old_q_prefix_to_writing_index() -> None:
-    note = FakeKeepNote("q: keep this in temp")
+    note = FakeKeepNote("q: keep this in temp", note_id="keep-note-1")
     keep = type("Keep", (), {"find": lambda self, **kwargs: [note]})()
 
-    keep_plan = pullTempNotes.build_keep_sync_plan(keep)
+    keep_plan = pullTempNotes.build_keep_sync_plan(keep, {})
 
     assert "q: keep this in temp" in keep_plan.temp_text
     assert keep_plan.writing_text == ""
     assert keep_plan.friends_text == ""
     assert keep_plan.url_actions == []
-    assert keep_plan.notes_to_trash == [note]
+    assert keep_plan.saved_texts == {"keep-note-1": "q: keep this in temp"}
 
 
 def test_sync_keep_notes_commits_question_notes_to_writing_index(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     events: list[str] = []
-    note = FakeNote(events)
-    keep = FakeKeep(events)
+    note = FakeKeepNote("https://example.com", note_id="keep-note-1", events=events)
+    keep = FakeKeep(events, [note])
     temp_notes_path = tmp_path / "temp.md"
     writing_notes_path = tmp_path / "writing.md"
     friends_notes_path = tmp_path / "friends.md"
@@ -652,9 +805,9 @@ def test_sync_keep_notes_commits_question_notes_to_writing_index(
     monkeypatch.setattr(
         pullTempNotes,
         "build_keep_sync_plan",
-        lambda keep_arg: keep_sync_plan(
+        lambda keep_arg, capture_ledger: keep_sync_plan(
             writing_text="\n\nquestion note",
-            notes_to_trash=[note],
+            saved_texts={"keep-note-1": "question note"},
         ),
     )
 
@@ -676,8 +829,8 @@ def test_sync_keep_notes_commits_friend_notes_to_friends_index(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     events: list[str] = []
-    note = FakeNote(events)
-    keep = FakeKeep(events)
+    note = FakeKeepNote("https://example.com", note_id="keep-note-1", events=events)
+    keep = FakeKeep(events, [note])
     temp_notes_path = tmp_path / "temp.md"
     writing_notes_path = tmp_path / "writing.md"
     friends_notes_path = tmp_path / "friends.md"
@@ -688,9 +841,9 @@ def test_sync_keep_notes_commits_friend_notes_to_friends_index(
     monkeypatch.setattr(
         pullTempNotes,
         "build_keep_sync_plan",
-        lambda keep_arg: keep_sync_plan(
+        lambda keep_arg, capture_ledger: keep_sync_plan(
             friends_text="\n\nfriend note",
-            notes_to_trash=[note],
+            saved_texts={"keep-note-1": "friend note"},
         ),
     )
 

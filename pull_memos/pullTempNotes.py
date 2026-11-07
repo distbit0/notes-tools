@@ -57,6 +57,7 @@ os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "pullTempNotes.log")
 LOCK_FILE = os.path.join(LOG_DIR, "pullTempNotes.lock")
 KEEP_URL_RETRY_COUNTS_FILE = os.path.join(LOG_DIR, "keep_url_retry_counts.json")
+KEEP_CAPTURE_LEDGER_FILE = os.path.join(LOG_DIR, "keep_capture_ledger.json")
 MAX_KEEP_URL_CONVERSION_ATTEMPTS = 3
 
 
@@ -88,12 +89,19 @@ class KeepUrlAction:
 
 
 @dataclass
+class KeepNoteRoute:
+    destination: str
+    text: str
+    url_action: KeepUrlAction | None = None
+
+
+@dataclass
 class KeepSyncPlan:
     temp_text: str
     writing_text: str
     friends_text: str
     url_actions: list[KeepUrlAction]
-    notes_to_trash: list[object]
+    saved_texts: dict[str, str]
 
 
 def formatIncomingText(text, isTranscription):
@@ -238,125 +246,163 @@ def format_prefixed_keep_note(note_title, note_text, prefix_pattern):
     return "\n".join(part for part in parts if part)
 
 
-def commit_keep_sync_batch(keep, file_writes, notes_to_trash):
-    if not any(text for _, text in file_writes) and not notes_to_trash:
-        return
+def load_keep_capture_ledger():
+    if not os.path.exists(KEEP_CAPTURE_LEDGER_FILE):
+        return {}
 
-    for file_path, text in file_writes:
-        if not text:
-            continue
-        writeToFile(file_path, text)
-    for gnote in notes_to_trash:
-        gnote.trash()
-    sync_keep(keep)
+    with open(KEEP_CAPTURE_LEDGER_FILE, "r") as file:
+        return json.load(file)
 
 
-def build_keep_sync_plan(keep):
+def save_keep_capture_ledger(capture_ledger):
+    # A truncated ledger would stop every later run, so replace it atomically.
+    temporary_path = f"{KEEP_CAPTURE_LEDGER_FILE}.tmp"
+    with open(temporary_path, "w") as file:
+        json.dump(capture_ledger, file, indent=2, sort_keys=True)
+    os.replace(temporary_path, KEEP_CAPTURE_LEDGER_FILE)
+
+
+def route_keep_note(gnote):
+    url_pattern = re.compile(r"https?://\S+")
+    noteText, noteTitle = (
+        formatIncomingText(
+            remove_keep_text_fragment_url_lines(gnote.text.strip()), False
+        ),
+        gnote.title.strip(),
+    )
+    question_text = format_prefixed_keep_note(
+        noteTitle, noteText, QUESTION_PREFIX_PATTERN
+    )
+    if question_text is not None:
+        return KeepNoteRoute("writing", question_text)
+
+    friend_text = format_prefixed_keep_note(noteTitle, noteText, FRIENDS_PREFIX_PATTERN)
+    if friend_text is not None:
+        return KeepNoteRoute("friends", friend_text)
+
+    infolio_text = strip_prefix(noteText, INFOLIO_PREFIX_PATTERN)
+    note_text_for_url_only_check = (
+        infolio_text if infolio_text is not None else noteText
+    ).rstrip()
+    has_infolio_marker = infolio_text is not None
+    urls = [
+        raw_url.rstrip(".,!?)]") for raw_url in url_pattern.findall(noteText.strip())
+    ]
+    is_url_only_note = (
+        urls and url_pattern.sub("", note_text_for_url_only_check).strip() == ""
+    )
+    slack_urls = [url for url in urls if "slack.com" in url]
+    non_slack_urls = [url for url in urls if "slack.com" not in url]
+    if is_url_only_note and has_infolio_marker:
+        return KeepNoteRoute(
+            "temp",
+            noteText,
+            KeepUrlAction(
+                note=gnote,
+                note_title=noteTitle,
+                raw_text=noteText,
+                lineate_urls=urls,
+                output_dest="infolio",
+            ),
+        )
+    if is_url_only_note and non_slack_urls:
+        return KeepNoteRoute(
+            "temp",
+            noteText,
+            KeepUrlAction(
+                note=gnote,
+                note_title=noteTitle,
+                raw_text=noteText,
+                lineate_urls=non_slack_urls,
+                success_text=(("\n\n" + "\n".join(slack_urls)) if slack_urls else ""),
+            ),
+        )
+    if is_url_only_note:
+        return KeepNoteRoute("temp", "\n".join(slack_urls))
+    return KeepNoteRoute("temp", noteText)
+
+
+def build_keep_sync_plan(keep, capture_ledger):
     gnotes = list(keep.find(archived=False, trashed=False))
     gnotes = sorted(gnotes, key=lambda x: x.timestamps.edited.timestamp())
-    textToAddToFile = ""
-    writing_text = ""
-    friends_text = ""
+    text_by_destination = {"temp": "", "writing": "", "friends": ""}
     url_actions = []
-    notes_to_trash = []
-    url_pattern = re.compile(r"https?://\S+")
-    quiet_period_seconds = load_config()["keepNoteQuietPeriodSeconds"]
+    saved_texts = {}
 
     for gnote in gnotes:
-        seconds_since_update = time.time() - gnote.timestamps.updated.timestamp()
-        if seconds_since_update < quiet_period_seconds:
-            # Keep uploads a note as it is typed, and trashing it strands what follows.
-            logger.info(
-                f"Deferring Keep note {gnote.id}: updated {seconds_since_update:.0f}s ago"
-            )
-            continue
         isWatchNote = gnote.title in ["Questions", "Statements", "Notes"]
         isEmpty = (gnote.text + gnote.title).strip() == ""
-        if isEmpty:
-            notes_to_trash.append(gnote)
-        if isEmpty or isWatchNote:
+        if isEmpty or isWatchNote or gnote.id in capture_ledger:
             continue
-        noteText, noteTitle = (
-            formatIncomingText(
-                remove_keep_text_fragment_url_lines(gnote.text.strip()), False
-            ),
-            gnote.title.strip(),
-        )
-        question_text = format_prefixed_keep_note(
-            noteTitle, noteText, QUESTION_PREFIX_PATTERN
-        )
-        if question_text is not None:
-            writing_text = append_keep_note_text(writing_text, question_text)
-            notes_to_trash.append(gnote)
-            continue
-
-        friend_text = format_prefixed_keep_note(
-            noteTitle, noteText, FRIENDS_PREFIX_PATTERN
-        )
-        if friend_text is not None:
-            friends_text = append_keep_note_text(friends_text, friend_text)
-            notes_to_trash.append(gnote)
-            continue
-
-        infolio_text = strip_prefix(noteText, INFOLIO_PREFIX_PATTERN)
-        note_text_for_url_only_check = (
-            infolio_text if infolio_text is not None else noteText
-        ).rstrip()
-        has_infolio_marker = infolio_text is not None
-        urls = [
-            raw_url.rstrip(".,!?)]")
-            for raw_url in url_pattern.findall(noteText.strip())
-        ]
-        is_url_only_note = (
-            urls and url_pattern.sub("", note_text_for_url_only_check).strip() == ""
-        )
-        slack_urls = [url for url in urls if "slack.com" in url]
-        non_slack_urls = [url for url in urls if "slack.com" not in url]
-        should_add_urls_to_infolio = is_url_only_note and has_infolio_marker
-        if should_add_urls_to_infolio:
-            url_actions.append(
-                KeepUrlAction(
-                    note=gnote,
-                    note_title=noteTitle,
-                    raw_text=noteText,
-                    lineate_urls=urls,
-                    output_dest="infolio",
-                )
-            )
-            continue
-        if is_url_only_note:
-            if non_slack_urls:
-                url_actions.append(
-                    KeepUrlAction(
-                        note=gnote,
-                        note_title=noteTitle,
-                        raw_text=noteText,
-                        lineate_urls=non_slack_urls,
-                        success_text=(
-                            ("\n\n" + "\n".join(slack_urls)) if slack_urls else ""
-                        ),
-                    )
-                )
-                continue
-            if slack_urls:
-                textToAddToFile += "\n\n" + "\n".join(slack_urls)
-            notes_to_trash.append(gnote)
+        route = route_keep_note(gnote)
+        if route.url_action:
+            url_actions.append(route.url_action)
             continue
         logger.debug(
-            f"Text from keep note {noteTitle if noteTitle else '[untitled]'}: {noteText}"
+            f"Text from keep note {gnote.title.strip() or '[untitled]'}: {route.text}"
         )
-        if noteText or noteTitle:
-            textToAddToFile += "\n"
-        noteTitle = ""
-        if "http" not in noteText:
-            textToAddToFile += "\n" + noteTitle if noteTitle else ""
-            textToAddToFile += ":" if noteText and noteTitle else ""
-        textToAddToFile += "\n" + noteText if noteText else ""
-        notes_to_trash.append(gnote)
+        text_by_destination[route.destination] = append_keep_note_text(
+            text_by_destination[route.destination], route.text
+        )
+        saved_texts[gnote.id] = route.text
 
     return KeepSyncPlan(
-        textToAddToFile, writing_text, friends_text, url_actions, notes_to_trash
+        text_by_destination["temp"],
+        text_by_destination["writing"],
+        text_by_destination["friends"],
+        url_actions,
+        saved_texts,
     )
+
+
+def replace_saved_keep_text(file_path, saved_text, current_text):
+    with open(file_path, "r") as file:
+        file_text = file.read()
+    # Whole lines only, so a short note cannot match inside a longer one.
+    saved_text_pattern = re.compile(rf"^{re.escape(saved_text)}$", re.MULTILINE)
+    updated_text, replacement_count = saved_text_pattern.subn(
+        lambda _: current_text, file_text, count=1
+    )
+    if replacement_count:
+        with open(file_path, "w") as file:
+            file.write(updated_text)
+    return replacement_count > 0
+
+
+def apply_keep_note_edits(keep, capture_ledger, file_paths):
+    for note_id, saved_text in list(capture_ledger.items()):
+        gnote = keep.get(note_id)
+        if gnote is None:
+            # Keep purged it from the trash, so it can no longer change.
+            del capture_ledger[note_id]
+            continue
+        route = route_keep_note(gnote)
+        if not route.text or route.text == saved_text:
+            continue
+        file_path = file_paths[route.destination]
+        if saved_text and replace_saved_keep_text(file_path, saved_text, route.text):
+            logger.info(f"Updated Keep note {note_id} in {file_path} with its edits")
+        else:
+            logger.warning(
+                f"Saved text of Keep note {note_id} is not in {file_path}; "
+                "appending its edited text"
+            )
+            writeToFile(file_path, "\n\n" + route.text)
+        capture_ledger[note_id] = route.text
+
+
+def trash_settled_keep_notes(keep, capture_ledger):
+    quiet_period_seconds = load_config()["keepNoteQuietPeriodSeconds"]
+    settled_notes = [
+        gnote
+        for gnote in keep.find(archived=False, trashed=False)
+        if time.time() - gnote.timestamps.updated.timestamp() >= quiet_period_seconds
+        and (gnote.id in capture_ledger or (gnote.text + gnote.title).strip() == "")
+    ]
+    for gnote in settled_notes:
+        gnote.trash()
+    if settled_notes:
+        sync_keep(keep)
 
 
 def run_lineate_for_urls(urls, output_dest="browser"):
@@ -594,21 +640,26 @@ def acquire_script_lock():
 def sync_keep_notes(
     keep, temp_file_path, writing_file_path, friends_file_path, opened_urls_path
 ):
-    keep_plan = build_keep_sync_plan(keep)
-    # Plain Keep text should land promptly even when downstream URL conversion is slow.
-    commit_keep_sync_batch(
+    capture_ledger = load_keep_capture_ledger()
+    apply_keep_note_edits(
         keep,
-        [
-            (temp_file_path, keep_plan.temp_text),
-            (writing_file_path, keep_plan.writing_text),
-            (friends_file_path, keep_plan.friends_text),
-        ],
-        keep_plan.notes_to_trash,
+        capture_ledger,
+        {
+            "temp": temp_file_path,
+            "writing": writing_file_path,
+            "friends": friends_file_path,
+        },
     )
+    keep_plan = build_keep_sync_plan(keep, capture_ledger)
+    # Plain Keep text should land promptly even when downstream URL conversion is slow.
+    writeToFile(temp_file_path, keep_plan.temp_text)
+    writeToFile(writing_file_path, keep_plan.writing_text)
+    writeToFile(friends_file_path, keep_plan.friends_text)
+    capture_ledger.update(keep_plan.saved_texts)
+    save_keep_capture_ledger(capture_ledger)
 
     keep_url_retry_counts = load_keep_url_retry_counts()
     deferred_keep_text = ""
-    deferred_notes_to_trash = []
 
     for url_action in keep_plan.url_actions:
         if url_action.lineate_urls:
@@ -628,18 +679,18 @@ def sync_keep_notes(
                     deferred_keep_text = append_keep_note_text(
                         deferred_keep_text, url_action.raw_text
                     )
-                    deferred_notes_to_trash.append(url_action.note)
+                    capture_ledger[url_action.note.id] = url_action.raw_text
                 continue
             if url_action.output_dest == "browser":
                 append_opened_urls(url_action.lineate_urls, opened_urls_path)
 
         clear_keep_url_retry_count(url_action, keep_url_retry_counts)
         deferred_keep_text += url_action.success_text
-        deferred_notes_to_trash.append(url_action.note)
+        capture_ledger[url_action.note.id] = url_action.raw_text
 
-    commit_keep_sync_batch(
-        keep, [(temp_file_path, deferred_keep_text)], deferred_notes_to_trash
-    )
+    writeToFile(temp_file_path, deferred_keep_text)
+    save_keep_capture_ledger(capture_ledger)
+    trash_settled_keep_notes(keep, capture_ledger)
 
 
 def delete_processed_mp3s(processed_mp3s, mp3_folder_path):
