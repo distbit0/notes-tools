@@ -24,6 +24,7 @@ from integrate_notes import (
     DEFAULT_NOTES_ROOT,
     DEFAULT_REASONING,
     MAX_PATCH_ATTEMPTS,
+    SCRATCHPAD_HEADING,
     PatchFailure,
     PatchInstruction,
     configure_logging,
@@ -80,7 +81,7 @@ REPORT_RULES = """- Judge every source change against the report description. Ig
 - Use only information present in the sources. Do not invent points, examples, or explanations.
 - Do not change report content that is unrelated to the source changes, except for minimal edits needed to keep the report coherent.
 - Follow the description for scope, ordering, and writing style.
-- Preserve wikilinks and URLs exactly.
+- Preserve wikilinks and URLs exactly, and leave tag lines such as #share unchanged.
 - Use markdown headings for sections, "- " as the bullet prefix, and four spaces per bullet nesting level, unless the report already uses a different convention."""
 
 
@@ -363,18 +364,23 @@ def update_report(client: OpenAI, repo_root: Path, head_commit: str, report: Rep
 
     original_content = report.path.read_text(encoding="utf-8")
     metadata_lines, body = split_frontmatter(original_content)
+    # Shared notes get a scratchpad heading appended by the gist sync; everything
+    # from it onward stays outside the model's view and is preserved verbatim.
+    report_body, scratchpad_heading, scratchpad_text = body.partition(SCRATCHPAD_HEADING)
     logger.info(
         f"{report.path.name}: requesting patches for changes in {', '.join(changed_source_diffs)} "
         f"since {baseline[:12]}."
     )
     updated_body, summary, patch_count = patch_report_body(
-        client, report.description, body.strip("\n"), changed_source_diffs, report.path.name
+        client, report.description, report_body.strip("\n"), changed_source_diffs, report.path.name
     )
     if report.path.read_text(encoding="utf-8") != original_content:
         raise RuntimeError(
             f"{report.path} changed while its update was running; left untouched so the next run retries."
         )
     updated_content = "---\n" + "\n".join(metadata_lines) + "\n---\n\n" + updated_body.strip("\n") + "\n"
+    if scratchpad_heading:
+        updated_content += f"\n{scratchpad_heading}{scratchpad_text.rstrip()}\n"
     report.path.write_text(
         set_frontmatter_scalar_field(updated_content, BASELINE_FIELD, head_commit),
         encoding="utf-8",

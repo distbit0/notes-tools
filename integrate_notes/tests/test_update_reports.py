@@ -19,7 +19,9 @@ SOURCE_NAME = "distilled-social-index.md"
 SOURCE_BEFORE_REORG = PRIVATE_DATA_DIR / "distilled-social-index.before-reorg.md"
 SOURCE_AFTER_REORG = PRIVATE_DATA_DIR / "distilled-social-index.after-reorg.md"
 REPORT_WITH_BASELINE = PRIVATE_DATA_DIR / "pre-date-read.md"
+SHARED_REPORT = PRIVATE_DATA_DIR / "pre-cold-approach-read.md"
 CAPTURED_UPDATES = sorted(PRIVATE_DATA_DIR.glob("captured-update-*.json"))
+CAPTURED_INTEGRATION_UPDATE = PRIVATE_DATA_DIR / "captured-update-cold-approach-integration.json"
 
 
 def init_notes_repo(repo_root: Path) -> None:
@@ -105,6 +107,45 @@ def test_update_report_skips_model_when_sources_are_unchanged(tmp_path: Path) ->
     update_reports.update_report(None, tmp_path, head_commit, report)
 
     assert report_path.read_text() == report_content
+
+
+def test_update_report_patches_only_the_shared_body_before_the_scratchpad(
+    tmp_path: Path, monkeypatch
+) -> None:
+    captured = json.loads(CAPTURED_INTEGRATION_UPDATE.read_text())
+    init_notes_repo(tmp_path)
+    source_path = tmp_path / SOURCE_NAME
+    source_path.write_text(SOURCE_BEFORE_REORG.read_text())
+    baseline_commit = commit_all(tmp_path, "source before reorganisation")
+    source_path.write_text(SOURCE_AFTER_REORG.read_text())
+    head_commit = commit_all(tmp_path, "source after reorganisation")
+    metadata_lines, _ = integrate_notes.split_frontmatter(SHARED_REPORT.read_text())
+
+    def shared_report_content(body: str, commit: str) -> str:
+        content = (
+            "---\n" + "\n".join(metadata_lines) + "\n---\n\n#share\n\n" + body
+            + f"\n\n{integrate_notes.SCRATCHPAD_HEADING}\n"
+        )
+        return integrate_notes.set_frontmatter_scalar_field(content, update_reports.BASELINE_FIELD, commit)
+
+    report_path = tmp_path / SHARED_REPORT.name
+    report_path.write_text(shared_report_content(captured["body_before"], baseline_commit))
+    [report] = update_reports.load_reports(tmp_path, report_path)
+    prompts = []
+
+    def request_report_patches(_client, prompt, _label):
+        prompts.append(prompt)
+        return captured["response"]
+
+    monkeypatch.setattr(update_reports, "request_report_patches", request_report_patches)
+
+    update_reports.update_report(None, tmp_path, head_commit, report)
+
+    assert report_path.read_text() == shared_report_content(captured["body_after"], head_commit)
+    [prompt] = prompts
+    report_body_in_prompt = prompt.split("<current_report_body>")[1].split("</current_report_body>")[0]
+    assert integrate_notes.SCRATCHPAD_HEADING not in report_body_in_prompt
+    assert report_body_in_prompt.strip().startswith("#share")
 
 
 def test_set_frontmatter_scalar_field_preserves_real_report_body() -> None:
