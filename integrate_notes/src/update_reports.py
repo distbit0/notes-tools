@@ -211,12 +211,14 @@ def build_report_prompt(
     description: str,
     report_body: str,
     source_diffs: dict[str, str],
+    full_sources: bool,
     previous_response: str | None = None,
     previous_error: str | None = None,
 ) -> str:
-    empty_report_note = (
-        "\nThe report is currently empty: build its complete content from the diffs, which show the full sources as added lines."
-        if not report_body.strip()
+    full_sources_note = (
+        "\nThe report has no recorded baseline, so the diffs show the full sources as added lines. Build or rebuild the "
+        "report so that it fully satisfies its description, keeping existing report content that already does."
+        if full_sources
         else ""
     )
     diff_sections = "\n".join(
@@ -236,7 +238,7 @@ def build_report_prompt(
     sections = [
         "<task>\nYou maintain a report note derived from source notes. Below are the report's description, its current body, "
         "and diffs of its source notes since the report was last updated. Decide which source changes, if any, matter for this "
-        f"report and emit patches that update the report accordingly.{empty_report_note}\n</task>",
+        f"report and emit patches that update the report accordingly.{full_sources_note}\n</task>",
         f"<rules>\n{REPORT_RULES}\n</rules>",
         f"<report_description>\n{description}\n</report_description>",
         f"<current_report_body>\n{report_body}\n</current_report_body>",
@@ -321,6 +323,7 @@ def patch_report_body(
     description: str,
     report_body: str,
     source_diffs: dict[str, str],
+    full_sources: bool,
     context_label: str,
 ) -> tuple[str, str, int]:
     previous_response: str | None = None
@@ -328,7 +331,7 @@ def patch_report_body(
     for attempt in range(1, MAX_PATCH_ATTEMPTS + 1):
         attempt_label = f"{context_label} attempt {attempt}"
         prompt = build_report_prompt(
-            description, report_body, source_diffs, previous_response, previous_error
+            description, report_body, source_diffs, full_sources, previous_response, previous_error
         )
         response_text = request_report_patches(client, prompt, attempt_label)
         logger.debug(f"Raw report response for {attempt_label}:\n{response_text}")
@@ -372,7 +375,12 @@ def update_report(client: OpenAI, repo_root: Path, head_commit: str, report: Rep
         f"since {baseline[:12]}."
     )
     updated_body, summary, patch_count = patch_report_body(
-        client, report.description, report_body.strip("\n"), changed_source_diffs, report.path.name
+        client,
+        report.description,
+        report_body.strip("\n"),
+        changed_source_diffs,
+        report.baseline_commit is None,
+        report.path.name,
     )
     if report.path.read_text(encoding="utf-8") != original_content:
         raise RuntimeError(
