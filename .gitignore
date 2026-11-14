@@ -26,6 +26,7 @@ notes/tests/private_test_data.json
 prioritise_habits/active_habits.json
 prioritise_habits/habits_store.json
 prioritise_habits/tests/private_test_data.json
+integrate_notes/tests/private_test_data/
 prioritise_habits/.habit_run.lock
 prioritise_habits/.habit_trigger_schedule
 prioritise_habits/.notes_habit_trigger_schedule

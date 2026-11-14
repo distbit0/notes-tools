@@ -168,17 +168,17 @@ VERIFICATION_RESPONSE_SCHEMA_TEXT = json.dumps(
 MAX_PATCH_ATTEMPTS = 3
 
 
-def configure_logging() -> None:
+def configure_logging(log_file_path: Path = LOG_FILE_PATH) -> None:
     logger.remove()
     logger.add(sys.stderr, level="INFO", enqueue=False)
     try:
-        LOG_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        log_file_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as error:
         raise RuntimeError(
-            f"Failed to prepare log directory {LOG_FILE_PATH.parent}: {error}"
+            f"Failed to prepare log directory {log_file_path.parent}: {error}"
         ) from error
     logger.add(
-        LOG_FILE_PATH,
+        log_file_path,
         level="DEBUG",
         rotation=LOG_FILE_ROTATION_BYTES,
         enqueue=False,
@@ -341,6 +341,18 @@ def set_frontmatter_block_field(content: str, field_name: str, value: str) -> st
     frontmatter = "\n".join(updated_metadata).rstrip()
     body = body.lstrip("\n")
     return f"---\n{frontmatter}\n---\n{body}"
+
+
+def set_frontmatter_scalar_field(content: str, field_name: str, value: str) -> str:
+    frontmatter_parts = split_frontmatter(content)
+    if frontmatter_parts is None:
+        raise ValueError(f"Cannot set {field_name}: content has no frontmatter.")
+    if not value.strip() or "\n" in value:
+        raise ValueError(f"{field_name} must be a non-empty single-line value.")
+    metadata_lines, body = frontmatter_parts
+    updated_metadata = _without_frontmatter_field(metadata_lines, field_name)
+    updated_metadata.append(f"{field_name}: {value}")
+    return "---\n" + "\n".join(updated_metadata) + "\n---\n" + body
 
 
 def frontmatter_field_equals(content: str, field_name: str, value: str) -> bool:
@@ -711,7 +723,7 @@ def _json_payload_text(payload: Any) -> str:
         return repr(payload)
 
 
-def _strip_json_code_fence(response_text: str) -> str:
+def strip_json_code_fence(response_text: str) -> str:
     stripped = response_text.strip()
     if not stripped.startswith("```"):
         return stripped
@@ -725,7 +737,7 @@ def _strip_json_code_fence(response_text: str) -> str:
         return stripped
 
     logger.warning(
-        "Integration response was wrapped in a markdown JSON fence; parsing the fenced JSON body."
+        "Model response was wrapped in a markdown JSON fence; parsing the fenced JSON body."
     )
     return "\n".join(lines[1:-1]).strip()
 
@@ -735,7 +747,7 @@ def parse_integration_payload(
 ) -> tuple[List[PatchInstruction], List[DuplicationProof]]:
     if not response_text.strip():
         raise IntegrationParseError("Integration response is empty.", response_text)
-    json_text = _strip_json_code_fence(response_text)
+    json_text = strip_json_code_fence(response_text)
     try:
         payload = json.loads(json_text)
     except json.JSONDecodeError as error:
@@ -1157,7 +1169,7 @@ def build_verification_prompt(
 def parse_verification_payload(response_text: str) -> VerificationAssessment:
     if not response_text.strip():
         raise RuntimeError("Verification response is empty.")
-    json_text = _strip_json_code_fence(response_text)
+    json_text = strip_json_code_fence(response_text)
     try:
         payload = json.loads(json_text)
     except json.JSONDecodeError as error:
