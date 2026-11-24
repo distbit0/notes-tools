@@ -9,7 +9,7 @@ import re
 import glob
 import datetime
 import time
-from openai import AuthenticationError, OpenAI
+from openai import APIConnectionError, AuthenticationError, OpenAI
 import hashlib
 import shutil
 import subprocess
@@ -511,6 +511,22 @@ def split_audio_into_chunks(audio_path, chunk_dir):
     return sorted(Path(chunk_dir).glob("chunk-*.mp3"))
 
 
+def split_audio_once(audio_path, transcript_dir):
+    # Retries come every 3 minutes, and re-encoding hours of audio on each one
+    # kept the CPU busy for as long as uploads kept failing.
+    chunk_dir = transcript_dir / "chunks"
+    if not chunk_dir.is_dir():
+        for stale_partial_dir in transcript_dir.glob(".chunks-*"):
+            shutil.rmtree(stale_partial_dir)
+        partial_dir = Path(tempfile.mkdtemp(prefix=".chunks-", dir=transcript_dir))
+        try:
+            split_audio_into_chunks(audio_path, partial_dir)
+            partial_dir.rename(chunk_dir)
+        finally:
+            shutil.rmtree(partial_dir, ignore_errors=True)
+    return sorted(chunk_dir.glob("chunk-*.mp3"))
+
+
 def transcribe_audio_chunk(client, chunk_path, transcript_path):
     if transcript_path.exists():
         return transcript_path.read_text()
@@ -528,19 +544,18 @@ def processMp3File(mp3FileName, transcript_dir):
     try:
         client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
         transcript_dir.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory() as chunk_dir:
-            chunk_paths = split_audio_into_chunks(mp3FileName, chunk_dir)
-            logger.info(f"Transcribing {len(chunk_paths)} chunks of {mp3FileName}")
-            with ThreadPoolExecutor(TRANSCRIPTION_WORKERS) as executor:
-                chunk_transcripts = list(
-                    executor.map(
-                        lambda chunk_path: transcribe_audio_chunk(
-                            client, chunk_path, transcript_dir / f"{chunk_path.stem}.txt"
-                        ),
-                        chunk_paths,
-                    )
+        chunk_paths = split_audio_once(mp3FileName, transcript_dir)
+        logger.info(f"Transcribing {len(chunk_paths)} chunks of {mp3FileName}")
+        with ThreadPoolExecutor(TRANSCRIPTION_WORKERS) as executor:
+            chunk_transcripts = list(
+                executor.map(
+                    lambda chunk_path: transcribe_audio_chunk(
+                        client, chunk_path, transcript_dir / f"{chunk_path.stem}.txt"
+                    ),
+                    chunk_paths,
                 )
-    except AuthenticationError:
+            )
+    except (AuthenticationError, APIConnectionError):
         raise
     except Exception as error:
         logger.exception(f"Transcription failed for {mp3FileName}: {error}")
@@ -602,9 +617,12 @@ def saveNotesFromMp3s():
             raw_text, transcription_successful = processMp3File(
                 mp3File, Path(AUDIO_TRANSCRIPTS_DIR) / file_hash
             )
+        # Every remaining file would fail the same way after its own slow split.
         except AuthenticationError as error:
-            # Every remaining file would fail the same way after its own slow split.
             logger.error(f"OpenAI rejected the API key; leaving audio to retry: {error}")
+            break
+        except APIConnectionError as error:
+            logger.error(f"Cannot reach OpenAI; leaving audio to retry: {error}")
             break
         formatted_text = formatIncomingText(raw_text, True) if raw_text else ""
 

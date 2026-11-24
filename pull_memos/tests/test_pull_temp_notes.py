@@ -1012,6 +1012,34 @@ def test_process_mp3_file_retry_only_requests_unfinished_chunks(
     assert transcript.count("text of chunk-") == 3
 
 
+def test_process_mp3_file_retry_reuses_the_split_audio(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    transcriptions: FakeTranscriptions,
+) -> None:
+    monkeypatch.setattr(pullTempNotes, "TRANSCRIPTION_CHUNK_SECONDS", 2)
+    recording = record_audio(tmp_path / "recording.mp3", seconds=5)
+    split_recordings: list[str] = []
+    split_audio_into_chunks = pullTempNotes.split_audio_into_chunks
+
+    def counting_split(audio_path, chunk_dir):
+        split_recordings.append(audio_path)
+        return split_audio_into_chunks(audio_path, chunk_dir)
+
+    monkeypatch.setattr(pullTempNotes, "split_audio_into_chunks", counting_split)
+    transcriptions.failing_chunks = {"chunk-00001"}
+    pullTempNotes.processMp3File(recording, tmp_path / "transcripts")
+    transcriptions.failing_chunks = set()
+
+    transcript, was_transcribed = pullTempNotes.processMp3File(
+        recording, tmp_path / "transcripts"
+    )
+
+    assert was_transcribed
+    assert transcript.count("text of chunk-") == 3
+    assert split_recordings == [recording]
+
+
 def test_process_mp3_file_reports_unreadable_audio_as_failed(
     tmp_path: Path, transcriptions: FakeTranscriptions
 ) -> None:
@@ -1039,6 +1067,29 @@ def test_save_notes_from_mp3s_stops_at_a_rejected_api_key(
             401, request=httpx.Request("POST", "https://api.openai.com/v1/")
         ),
         body=None,
+    )
+    monkeypatch.setattr(
+        pullTempNotes,
+        "load_config",
+        lambda: {"mp3CaptureFolder": str(tmp_path)},
+    )
+
+    text_to_add, processed_mp3s = pullTempNotes.saveNotesFromMp3s()
+
+    assert text_to_add == ""
+    assert processed_mp3s == {}
+    assert len(transcriptions.requested_chunks) == 1
+
+
+def test_save_notes_from_mp3s_stops_when_openai_is_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    transcriptions: FakeTranscriptions,
+) -> None:
+    record_audio(tmp_path / "My recording 1.mp3", seconds=1)
+    record_audio(tmp_path / "My recording 2.mp3", seconds=2)
+    transcriptions.failure = openai.APIConnectionError(
+        request=httpx.Request("POST", "https://api.openai.com/v1/")
     )
     monkeypatch.setattr(
         pullTempNotes,

@@ -20,7 +20,8 @@
 - Every recording goes through one ffmpeg split, whatever its length, because pydub holds decoded audio in memory and the old crop silently discarded everything after 1100 seconds. Cuts are at fixed times: the long recordings examined had almost no silence to cut at, so a word can be lost at a boundary. Chunk transcripts are joined with paragraph breaks, so a sentence can break there too.
 - Chunk transcripts stay in `logs/audio_transcripts/<file hash>/` until the text is saved, because a retry every 3 minutes would otherwise re-bill finished chunks. The processed hash is recorded only after that write; recording it first let a crash trash audio whose text was never saved.
 - Transcripts over `maxInboxTranscriptChars` go to their own `voice-transcript-*.md` note with only a link in the inbox. `inbox-index` is `#share`d to a gist and read whole by agents, and a long recording may hold other people's speech, so no preview goes there either.
-- A rejected API key stops the audio batch, since every remaining file would fail the same way after its own slow split. Audio runs before Keep, so this also stops a bad key from delaying note capture.
+- The split chunks are kept in `logs/audio_transcripts/<file hash>/chunks/` until the text is saved, so a retry never re-encodes the recording. Re-splitting about 1 GB of stuck recordings every 3 minutes while uploads failed kept the laptop hot for hours with the lid closed. The cost is disk space for the chunks of unfinished recordings.
+- A rejected API key or an unreachable OpenAI stops the audio batch, since every remaining file would fail the same way after its own slow split. Audio runs before Keep, so this also stops a bad key or a dropped network from delaying note capture.
 - `gpt-4o-transcribe` shuts down on 2027-02-26; `gpt-transcribe` replaces it. The model was not switched because the key could not test it.
 
 ## Capture routing
