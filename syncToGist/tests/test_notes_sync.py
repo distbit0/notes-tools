@@ -105,22 +105,63 @@ def test_get_all_notes_linked_from_index_notes_strips_linked_note_share_token(
     assert linked_notes["linked-note.md"]["text"] == "Linked content"
 
 
-def test_gist_scan_ignores_subdirectories(tmp_path: Path) -> None:
+def test_gist_scan_includes_subfolders_except_hidden_and_chat_exports(
+    tmp_path: Path,
+) -> None:
     notes_folder = copy_captured_notes(tmp_path)
-    nested_folder = notes_folder / "nested"
-    nested_folder.mkdir()
-    shutil.copy2(
-        notes_folder / "root-index.md",
-        nested_folder / "nested-index.md",
-    )
+    for nested_folder in [
+        "artifacts/2026-11-24",
+        ".agents/skills/example",
+        "chatgpt-conversations/2026-11-23--example",
+    ]:
+        (notes_folder / nested_folder).mkdir(parents=True)
+        shutil.copy2(
+            notes_folder / "root-index.md",
+            notes_folder / nested_folder / "nested-index.md",
+        )
 
     index_notes = notesSync.getAllIndexNotes(str(notes_folder))
 
-    assert set(index_notes) == {"root-index.md"}
-    assert all(
-        Path(info["file_path"]).parent == notes_folder
-        for info in index_notes.values()
+    assert set(index_notes) == {
+        "root-index.md",
+        "artifacts/2026-11-24/nested-index.md",
+    }
+
+
+def test_path_qualified_links_resolve_same_named_subfolder_notes(
+    tmp_path: Path,
+) -> None:
+    for folder in ["artifacts/2026-11-09", "artifacts/2026-11-14"]:
+        (tmp_path / folder).mkdir(parents=True)
+        (tmp_path / folder / "report.md").write_text(
+            f"Report from {folder}\n", encoding="utf-8"
+        )
+    (tmp_path / "report.md").write_text("Root report\n", encoding="utf-8")
+    index_notes = {
+        "index.md": {
+            "file_path": str(tmp_path / "index.md"),
+            "gist_link": None,
+            "text": "[[artifacts/2026-11-14/report]] [[report]] [[artifacts/old/report]]",
+        }
+    }
+
+    linked_notes = notesSync.getAllNotesLinkedFromIndexNotes(
+        index_notes,
+        str(tmp_path),
     )
+
+    assert set(linked_notes) == {"artifacts/2026-11-14/report.md", "report.md"}
+    assert (
+        linked_notes["artifacts/2026-11-14/report.md"]["text"]
+        == "Report from artifacts/2026-11-14"
+    )
+    gist_notes = {
+        "artifacts/2026-11-14/report.md": {"gist_link": "https://gist.github.com/new"},
+        "report.md": {"gist_link": "https://gist.github.com/root"},
+    }
+    assert notesSync.wikilinksToGistLinks(
+        "[[artifacts/2026-11-14/report|new]] [[report]]", gist_notes
+    ) == "[new](https://gist.github.com/new) [report](https://gist.github.com/root)"
 
 
 def test_gist_scan_excludes_blocked_notes(tmp_path: Path) -> None:

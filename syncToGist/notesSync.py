@@ -13,6 +13,8 @@ from utils import delete_gist, getConfig, writeGist
 
 SHARE_TOKEN_PATTERN = re.compile(r"(?<![\w-])#share(?![\w-])")
 BLOCK_TOKEN_PATTERN = re.compile(r"(?<![\w-])#block(?![\w-])")
+# Hidden folders hold tooling, and assistant chat exports are private even when linked.
+EXCLUDED_SUBFOLDERS = {"chatgpt-conversations"}
 
 
 @contextmanager
@@ -46,10 +48,37 @@ def note_slug(value):
     return "".join(slug_chars).strip("-")
 
 
-def _iter_top_level_markdown_paths(directory: str):
-    for filename in os.listdir(directory):
-        if filename.endswith(".md"):
-            yield os.path.join(directory, filename)
+def _iter_markdown_paths(directory: str):
+    for folder, subfolders, filenames in os.walk(directory):
+        is_root = folder == directory
+        subfolders[:] = sorted(
+            name
+            for name in subfolders
+            if not name.startswith(".")
+            and not (is_root and name in EXCLUDED_SUBFOLDERS)
+        )
+        for filename in sorted(filenames):
+            if filename.endswith(".md"):
+                yield os.path.join(folder, filename)
+
+
+def note_link_key(link_target):
+    target = link_target.strip().split("#", 1)[0]
+    return "/".join(note_slug(part) for part in target.split("/") if part.strip())
+
+
+def build_note_lookup(relative_paths):
+    lookup = {}
+    # Root notes come first, so they win bare-name links shared with subfolder notes.
+    for relative_path in sorted(relative_paths, key=lambda path: (path.count("/"), path)):
+        lookup.setdefault(note_link_key(relative_path), relative_path)
+        lookup.setdefault(note_slug(relative_path), relative_path)
+    return lookup
+
+
+def resolve_note_link(link_target, lookup):
+    # A stale folder path still resolves by file name, as it did before subfolders synced.
+    return lookup.get(note_link_key(link_target)) or lookup.get(note_slug(link_target))
 
 
 def find_files_by_regex_on_content(root_folder, regexPattern):
@@ -58,8 +87,7 @@ def find_files_by_regex_on_content(root_folder, regexPattern):
     # Compile the regex pattern outside of the loop for efficiency
     compiled_pattern = re.compile(regexPattern)
 
-    # Only scan top-level notes (do not touch subfolders under notesFolder).
-    for filepath in _iter_top_level_markdown_paths(root_folder):
+    for filepath in _iter_markdown_paths(root_folder):
         with open(filepath, "r", encoding="utf-8", errors="ignore") as file:
             for line in file:
                 if compiled_pattern.search(line):
@@ -108,8 +136,8 @@ def load_note(file_path):
 def getAllIndexNotes(directory):
     file_info_dict = {}
 
-    for file_path in _iter_top_level_markdown_paths(directory):
-        file_name = os.path.basename(file_path)
+    for file_path in _iter_markdown_paths(directory):
+        file_name = os.path.relpath(file_path, directory)
         with open(file_path, "r", encoding="utf-8", errors="ignore") as file:
             raw_content = file.read()
         if has_block_token(raw_content) or not has_share_token(
@@ -131,26 +159,25 @@ def getAllNotesLinkedFromIndexNotes(indexNotes, directory):
     file_info_dict = {}
     wikilink_pattern = r"\[\[(?P<filename>[^|\]]+?)(?:\|(?P<linkText>[^]]+))?\]\]"
 
-    top_level_md_by_stem_lower = {}
-    for path in _iter_top_level_markdown_paths(directory):
-        file_name = os.path.basename(path)
-        top_level_md_by_stem_lower[note_slug(file_name)] = path
+    note_lookup = build_note_lookup(
+        os.path.relpath(path, directory) for path in _iter_markdown_paths(directory)
+    )
 
     for indexNoteName, file_info in indexNotes.items():
         text = file_info["text"]
         wikilinks = re.findall(wikilink_pattern, text)
 
         for wikilink in wikilinks:
-            matching_file = top_level_md_by_stem_lower.get(note_slug(wikilink[0]))
+            file_name = resolve_note_link(wikilink[0], note_lookup)
 
-            if matching_file:
+            if file_name:
+                matching_file = os.path.join(directory, file_name)
                 with open(
                     matching_file, "r", encoding="utf-8", errors="ignore"
                 ) as file:
                     raw_content = file.read()
                 if has_block_token(raw_content):
                     continue
-                file_name = os.path.basename(matching_file)
                 post = frontmatter.loads(raw_content)
                 gist_url = post.metadata.get("gist_url", None)
                 file_info_dict[file_name] = {
@@ -167,7 +194,7 @@ def getAllNotesLinkedFromIndexNotes(indexNotes, directory):
 
 
 def delete_blocked_note_gists(directory):
-    for file_path in _iter_top_level_markdown_paths(directory):
+    for file_path in _iter_markdown_paths(directory):
         with open(file_path, "r", encoding="utf-8", errors="ignore") as file:
             raw_content = file.read()
         if not has_block_token(raw_content):
@@ -192,8 +219,7 @@ def setLiveFlag(allGistNotes, directory):
         info["gist_link"] for info in allGistNotes.values() if info["gist_link"]
     }
 
-    # Only update top-level notes (do not touch subfolders under notesFolder).
-    for file_path in _iter_top_level_markdown_paths(directory):
+    for file_path in _iter_markdown_paths(directory):
         fileIsGist = open(file_path).read().strip().startswith("---")
         if not fileIsGist:
             continue
@@ -230,7 +256,7 @@ def process_markdown_files(directory):
 def wikilinksToGistLinks(md_string, allFileNames):
     # Regex pattern to match the markdown links
     pattern = r"\[\[(?P<filename>[^|\]]+)(?:\|(?P<linkText>[^]]+))?\]\]"
-    notes_by_slug = {note_slug(file_name): info for file_name, info in allFileNames.items()}
+    note_lookup = build_note_lookup(allFileNames)
 
     # Function to replace matched markdown links
     def replace_func(match):
@@ -238,7 +264,7 @@ def wikilinksToGistLinks(md_string, allFileNames):
         filename = match.group("filename").split("/")[-1]  # Only take the file name
         linkText = match.group("linkText") if match.group("linkText") else filename
         linkText = linkText.replace(".md", "")
-        file_info = notes_by_slug.get(note_slug(filename))
+        file_info = allFileNames.get(resolve_note_link(match.group("filename"), note_lookup))
         if not file_info or "gist_link" not in file_info:
             return linkText
         else:
@@ -281,7 +307,8 @@ def process_single_file(fileName, gistFiles):
     fileText = wikilinksToGistLinks(fileText, gistFiles).replace("\n", "  \n")
     gistId = file_info["gist_link"].split("/")[-1] if file_info["gist_link"] else None
     # Create or update the gist
-    new_gist_id = writeGist(fileText, fileName.replace(".md", ""), None, gistId).split(
+    gist_name = os.path.basename(fileName).replace(".md", "")
+    new_gist_id = writeGist(fileText, gist_name, None, gistId).split(
         "/"
     )[-1]
     if file_info["gist_link"] is None:
