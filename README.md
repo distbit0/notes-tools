@@ -17,7 +17,6 @@ The tables cover runnable entry points. The remaining Python and JavaScript file
 | `migrate_note_frontmatter_directives.py` | Moves legacy note directives into YAML frontmatter and removes obsolete todo blocks. |
 | `normalize_markdown_filenames.py` | Renames Markdown files to stable slugs and updates affected wikilinks. |
 | `open_chatgpt_conversations_in_brave.mjs` | Writes the qualifying URLs from its initial full scan oldest-first to a text file, then directly opens qualifying conversations from later incremental scans in Brave. Conversations still pending in the initial queue remain manual. An interrupted initial run can be recovered from an exact-title manifest in its state directory. |
-| `route_friend_discussion_ideas.py` | Classifies discussion ideas from a scratchpad and routes them into tagged friend notes. |
 | `select_infolio_relevance_articles.py` | Selects an unreviewed sample from a ranked Infolio article queue for scheduled analysis. |
 | `social_notifs_to_notes.py` | Collects X, LessWrong, and EthResearch notifications into the notes inbox, keeping only the latest entry per DM or private-message conversation. |
 | `telegram_notifs_to_notes.py` | Saves unread Telegram DMs, mentions, and selected small-group messages as notes and desktop notifications. |
