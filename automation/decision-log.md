@@ -15,7 +15,7 @@
 ## Goal advancement scheduling
 
 - Date: 2026-11-27
-- Decision: goal advancement no longer runs through this wrapper. It runs as the Claude Desktop scheduled task `goal-advancement` (07:00, cron `*/3` day of month), which starts one Claude session per chosen action. Review and feedback happen in those chats; the Codex `feedback.md` is retired.
+- Decision: goal advancement no longer runs through this wrapper. It runs as the Claude Desktop scheduled task `goal-advancement` (07:00, cron `*/3` day of month), whose planner launches one background `claude --bg --remote-control` session per chosen action. Review and feedback happen in those chats; the Codex `feedback.md` is retired.
 - Rationale: the user reviews from the Claude app and phone and doesn't want to edit feedback files. Desktop tasks run only while the app is open, and cron `*/3` gives an occasional one-day gap at month ends.
 - Leftover: the `daily-goal-advancement` Codex profile is unused.
 
