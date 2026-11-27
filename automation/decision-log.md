@@ -14,10 +14,10 @@
 
 ## Goal advancement scheduling
 
-- Date: 2026-08-12
-- Decision: run `scheduled-goal-advancement` every three days at 07:00 on phase 1 through the recurring scheduled-job wrapper, using an unattended `exec` session and the dedicated `daily-goal-advancement` Codex profile. The phase includes the completed 2026-08-12 run, so the next due date is 2026-08-15.
-- Rationale: reactivate autonomous progress on the prioritized current goals while keeping the run isolated from other scheduled skills and out of interactive session history.
-- Safety: the dedicated profile applies the goal-advancement permission policy rather than the wrapper's default full-access bypass.
+- Date: 2026-11-27
+- Decision: goal advancement no longer runs through this wrapper. It runs as the Claude Desktop scheduled task `goal-advancement` (07:00, cron `*/3` day of month), which starts one Claude session per chosen action. Review and feedback happen in those chats; the Codex `feedback.md` is retired.
+- Rationale: the user reviews from the Claude app and phone and doesn't want to edit feedback files. Desktop tasks run only while the app is open, and cron `*/3` gives an occasional one-day gap at month ends.
+- Leftover: the `daily-goal-advancement` Codex profile is unused.
 
 ## Message reply drafting
 

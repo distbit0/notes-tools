@@ -56,7 +56,6 @@ def scheduled_daily_jobs() -> dict[str, tuple[str, str]]:
 
 def test_scheduled_codex_job_cadences_are_spread_out() -> None:
     expected_schedule = {
-        "scheduled-goal-advancement": ("07:00", 3, 1),
         "scheduled-tweet-ideas": ("04:00", 3, 2),
         "scheduled-resolve-contradictions": ("04:00", 6, 1),
         "scheduled-idea-space-search": ("05:00", 5, 1),
@@ -95,7 +94,6 @@ def test_unattended_scheduled_jobs_do_not_relabel_as_cli() -> None:
         "scheduled-answer-open-questions",
         "scheduled-security-audit",
         "scheduled-distill-assistant-chats",
-        "scheduled-goal-advancement",
         "scheduled-infolio-relevance",
     }
 
@@ -195,28 +193,15 @@ fi
     assert "Selection JSON:" not in result.stderr
 
 
-def test_goal_advancement_is_automatically_scheduled() -> None:
+def test_goal_advancement_is_not_scheduled_through_codex() -> None:
     scheduler_text = SCHEDULER.read_text(encoding="utf-8")
     scheduled_jobs = scheduler_text[
         scheduler_text.index("scheduled_codex_jobs()"):
         scheduler_text.index("\nscheduled_message_reply_jobs()")
     ]
 
-    assert (
-        'scheduled_codex_job_every_n_days "scheduled-goal-advancement" '
-        '"scheduled-goal-advancement" "exec" "07:00" 3 1 "" "" '
-        '"daily-goal-advancement"'
-    ) in scheduled_jobs
-
-    cadence_job = scheduler_text[
-        scheduler_text.index("scheduled_codex_job_every_n_days()"):
-        scheduler_text.index("\nrun_mode=")
-    ]
-    assert 'local profile_name="${9:-}"' in cadence_job
-    assert (
-        'run_and_record_codex_job "$job_name" "$skill_name" "$session_source" '
-        '"$extra_prompt" "$profile_name"'
-    ) in cadence_job
+    # Goal advancement runs as the Claude Desktop scheduled task `goal-advancement`.
+    assert "scheduled-goal-advancement" not in scheduled_jobs
 
 
 def test_interactive_todo_kickoff_is_configured_but_disabled() -> None:
